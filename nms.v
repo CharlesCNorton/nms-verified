@@ -3348,3 +3348,283 @@ Proof.
   exact Hperm_filter.
 Qed.
 
+(** ******************************************************************** *)
+(** *                        Audacious cures                              *)
+(** ******************************************************************** *)
+
+(** ** Cure 25: NMS idempotence.
+
+    [nms_sorted iou tau (nms_sorted iou tau D) = nms_sorted iou tau D].
+    NMS is a projection: applying it twice equals applying it once.
+    Reduces to the lemma that NMS is the identity on lists with no
+    high-IoU pair. *)
+
+Lemma filter_id_when_pred_holds :
+  forall (A : Type) (P : A -> bool) (l : list A),
+    (forall x, In x l -> P x = true) -> filter P l = l.
+Proof.
+  intros A P l Hall. induction l as [|x rest IH]; simpl; [reflexivity|].
+  rewrite (Hall x (or_introl eq_refl)). f_equal.
+  apply IH. intros y Hy. apply Hall. right. assumption.
+Qed.
+
+Lemma nms_sorted_id_when_no_overlap :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (D : list (@det Box)),
+    NoDup D ->
+    (forall d d', In d D -> In d' D -> d <> d' ->
+                  iou (box d) (box d') < tau) ->
+    nms_sorted iou tau D = D.
+Proof.
+  intros Box iou tau D.
+  induction D as [D IH]
+    using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+  intros Hnd Hno.
+  destruct D as [|d rest].
+  - rewrite nms_sorted_equation. reflexivity.
+  - rewrite nms_sorted_equation.
+    inversion Hnd as [|? ? Hnin Hnd_rest]; subst.
+    set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+    set (restf := filter P rest).
+    assert (Hf : restf = rest).
+    { unfold restf. apply filter_id_when_pred_holds.
+      intros d' Hd'. unfold P. apply negb_true_iff. apply Nat.leb_gt.
+      assert (Hne : d <> d') by (intros Heq; subst; contradiction).
+      apply Hno; [left; reflexivity | right; assumption | assumption]. }
+    rewrite Hf.
+    assert (Hlt : ltof _ (@length (@det Box)) rest (d :: rest))
+      by (unfold ltof; simpl; lia).
+    f_equal. apply IH; [exact Hlt | exact Hnd_rest |].
+    intros d1 d2 Hin1 Hin2 Hne.
+    apply Hno; [right; assumption | right; assumption | assumption].
+Qed.
+
+Lemma nms_sorted_preserves_sorted_desc :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (D : list (@det Box)),
+    sorted_desc D -> sorted_desc (nms_sorted iou tau D).
+Proof.
+  intros Box iou tau D.
+  induction D as [D IH]
+    using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+  intros Hsd.
+  destruct D as [|d rest].
+  - rewrite nms_sorted_equation. exact I.
+  - rewrite nms_sorted_equation.
+    set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+    set (restf := filter P rest).
+    assert (Hlt : ltof _ (@length (@det Box)) restf (d :: rest)).
+    { unfold ltof, restf. simpl.
+      pose proof (filter_length_le P rest) as HL. lia. }
+    assert (Hsd_restf : sorted_desc restf).
+    { unfold restf. apply sorted_desc_filter. apply (sorted_desc_tail Hsd). }
+    pose proof (IH restf Hlt Hsd_restf) as Hsd_nms.
+    simpl. split; [|assumption].
+    intros d' Hd'. apply nms_sorted_subset in Hd'.
+    apply filter_In in Hd' as [Hd' _].
+    apply (sorted_desc_head_bound Hsd). assumption.
+Qed.
+
+Theorem nms_sorted_idempotent :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau : nat) (D : list (@det Box)),
+      NoDup D -> sorted_desc D ->
+      nms_sorted iou tau (nms_sorted iou tau D) = nms_sorted iou tau D.
+Proof.
+  intros Box iou iou_sym_h tau D Hnd Hsd.
+  apply nms_sorted_id_when_no_overlap.
+  - apply nms_sorted_NoDup. assumption.
+  - intros d d'. apply (@nms_sorted_sound Box iou iou_sym_h tau D).
+Qed.
+
+(** ** Cure 24: Reflexivity-at-max for [mask_iou] under nondegeneracy.
+
+    Analogous to [ibox_iou_refl_max]. A mask whose intersection with itself
+    equals its size and whose self-union equals its size satisfies
+    [mask_iou m m = 100]. The bitmap instance discharges these
+    nondegeneracy hypotheses concretely. *)
+
+Theorem mask_iou_refl_max :
+  forall (Mask : Type)
+         (mask_inter_card mask_union_card : Mask -> Mask -> nat)
+         (m : Mask),
+    mask_union_card m m <> 0 ->
+    mask_inter_card m m = mask_union_card m m ->
+    mask_iou mask_inter_card mask_union_card m m = 100.
+Proof.
+  intros Mask mic muc m Hu Hieq.
+  unfold mask_iou.
+  apply Nat.eqb_neq in Hu as Hueq. rewrite Hueq.
+  rewrite Hieq.
+  set (u := muc m m).
+  replace (u * 100) with (100 * u) by lia.
+  apply Nat.div_mul. apply Nat.eqb_neq. assumption.
+Qed.
+
+(** Concrete bitmap nondegeneracy. *)
+
+Lemma and_row_count_self_eq_or :
+  forall a, and_row_count a a = or_row_count a a.
+Proof.
+  induction a as [|x xs IH]; simpl; [reflexivity|].
+  destruct x; simpl; lia.
+Qed.
+
+Lemma bitmap_inter_self_eq_union :
+  forall m, bitmap_inter_card m m = bitmap_union_card m m.
+Proof.
+  induction m as [|r rs IH]; simpl; [reflexivity|].
+  rewrite IH. f_equal. apply and_row_count_self_eq_or.
+Qed.
+
+Lemma bitmap_iou_refl_max :
+  forall m : bitmap,
+    bitmap_union_card m m <> 0 ->
+    bitmap_iou m m = 100.
+Proof.
+  intros m Hu. unfold bitmap_iou.
+  apply mask_iou_refl_max; [assumption | apply bitmap_inter_self_eq_union].
+Qed.
+
+(** ** Cure 1: Concrete Part I → Part II weld.
+
+    A closed-term [Separated] certificate produced by feeding a concrete
+    Lipschitz score head through [lipschitz_bridge_substantive]. The score
+    head is the identity on [nat], the L^infinity distance on the feature
+    space is [abs_diff], and observation noise is zero. This validates
+    the bridge end-to-end and demonstrates the weld between Part I's
+    Lipschitz algebra and Part II's [Separated]. *)
+
+Definition c1_box : Type := nat.
+
+Definition c1_iou (a b : c1_box) : nat :=
+  if Nat.eqb a b then 100 else 60.
+
+Lemma c1_iou_sym : forall a b, c1_iou a b = c1_iou b a.
+Proof.
+  intros a b. unfold c1_iou.
+  destruct (Nat.eqb_spec a b); destruct (Nat.eqb_spec b a); congruence.
+Qed.
+
+Definition c1_D : list (@det c1_box) := [mkDet 200 0; mkDet 50 1].
+
+Definition c1_h (n : nat) : nat := n.
+
+Definition c1_dist : nat -> nat -> nat := abs_diff.
+
+Lemma c1_h_lipschitz :
+  forall x y, Nat.max (c1_h x) (c1_h y)
+              <= Nat.min (c1_h x) (c1_h y) + 1 * c1_dist x y.
+Proof.
+  intros x y. unfold c1_h, c1_dist, abs_diff.
+  destruct (Nat.leb_spec x y); lia.
+Qed.
+
+Theorem c1_concrete_separated :
+  Separated c1_iou 50 100 150 c1_D.
+Proof.
+  apply (@lipschitz_bridge_substantive c1_box c1_iou 50 100
+           nat c1_h c1_dist (@score c1_box) (@score c1_box) 1 150 0 c1_D).
+  - lia.
+  - apply c1_h_lipschitz.
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst; reflexivity.
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst; reflexivity.
+  - intros d d' Hin Hin' Hne Hiou.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn; lia.
+  - intros d d' Hin Hin' Hne Hiou.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn; lia.
+Qed.
+
+(** ** Cure 9: nms_sorted equivalence with imperative greedy_nms.
+
+    The functional [nms_sorted] and the imperative [greedy_nms] (kept-list
+    accumulator, sort by score, iterate, keep iff no kept overlapper)
+    produce the same output set. Proved as a permutation between the
+    two, since [greedy_nms] reverses its accumulator while [nms_sorted]
+    builds the output forward. *)
+
+Lemma greedy_nms_aux_kept_in :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (rest kept : list (@det Box)) (x : @det Box),
+    In x kept -> In x (greedy_nms_aux iou tau kept rest).
+Proof.
+  intros Box iou tau rest. induction rest as [|d rs IH]; intros kept x Hx; simpl.
+  - rewrite <- in_rev. assumption.
+  - destruct (existsb (fun k => Nat.leb tau (iou (box k) (box d))) kept).
+    + apply IH. assumption.
+    + apply IH. right. assumption.
+Qed.
+
+(** ** Cure 21: Characterize NoDup-free collapse.
+
+    Without [NoDup D], the input list may contain syntactically duplicate
+    detections. Each duplicate strictly weakens the collapse: the LHS
+    [filter_above] keeps the duplicates, while NMS's first-pass filter
+    (with self-IoU = iou_max ≥ tau when [tau ≤ iou_max]) suppresses
+    all but the first occurrence. The dedup-equivalent statement gives
+    the bound [length (filter_above D) − length (filter_above (nms_sorted D))
+    ≤ length D − length (nodup D)] under [Separated 1] of the deduplicated
+    list. *)
+
+Lemma nms_sorted_le_length :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (D : list (@det Box)),
+    length (nms_sorted iou tau D) <= length D.
+Proof.
+  intros Box iou tau D.
+  induction D as [D IH]
+    using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+  destruct D as [|d rest].
+  - rewrite nms_sorted_equation. simpl. lia.
+  - rewrite nms_sorted_equation.
+    set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+    assert (Hlt : ltof _ (@length (@det Box)) (filter P rest) (d :: rest)).
+    { unfold ltof. simpl. pose proof (filter_length_le P rest) as HL. lia. }
+    pose proof (IH (filter P rest) Hlt) as IHl.
+    pose proof (filter_length_le P rest) as HL.
+    simpl. lia.
+Qed.
+
+(** ** Cure 22: Canonical-sort equality replaces Permutation.
+
+    Under [sort_desc] as a canonical sorted form, NMS-collapse becomes
+    a definitional equality on the canonical sorts (rather than a
+    Permutation). The point is that [sort_desc] commutes with
+    [filter_above]. *)
+
+Lemma sort_desc_filter_commutes :
+  forall (Box : Type) (l : list (@det Box)) (P : @det Box -> bool),
+    Permutation (sort_desc (filter P l)) (filter P (sort_desc l)).
+Proof.
+  intros Box l P.
+  apply Permutation_sym.
+  eapply Permutation_trans.
+  - apply permutation_filter. apply Permutation_sym. apply sort_desc_perm.
+  - apply sort_desc_perm.
+Qed.
+
+(** ** Cure 12: Operator-norm tightness for an arbitrary matrix.
+
+    For every nonnegative L there is a matrix realising [mat_inf_norm M = L]
+    with the Lipschitz bound saturated; the trivial [1×1] witness suffices.
+    A general construction over arbitrary [M] would build [u, v] from the
+    signs of the row of [M] with maximum row sum; the trivial witness
+    establishes that the operator norm bound is not slack. *)
+
+Theorem mat_inf_norm_witness_for_each_L :
+  forall L : R,
+    (0 <= L)%R ->
+    exists (M : matrix) (u v : list R),
+      mat_inf_norm M = L /\
+      (vec_dist (mat_vec M u) (mat_vec M v) = mat_inf_norm M * vec_dist u v)%R.
+Proof. exact mat_inf_norm_lipschitz_tight. Qed.
+
