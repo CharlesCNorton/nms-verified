@@ -501,6 +501,41 @@ Proof.
   apply mat_vec_lipschitz; assumption.
 Qed.
 
+(** ** Type-enforced shape: dimension-indexed [Vector n] and [Matrix r c].
+
+    [Vector n] and [Matrix r c] are sigma types carrying length and
+    rectangularity proofs. The typed [tmat_vec : Matrix r c -> Vector c
+    -> Vector r] makes dimensional compatibility a type constraint;
+    [tmat_vec_lipschitz] inherits the operator-norm bound from
+    [mat_vec_lipschitz] without any [length u = length v] hypothesis. *)
+
+Definition Vector (n : nat) : Type := { v : list R | length v = n }.
+
+Definition Matrix (r c : nat) : Type :=
+  { M : list (list R) | length M = r /\ Forall (fun row => length row = c) M }.
+
+Definition tmat_vec {r c : nat} (M : Matrix r c) (u : Vector c) : Vector r.
+Proof.
+  destruct M as [Mlist [Hlen_M _]].
+  destruct u as [ulist _].
+  exists (mat_vec Mlist ulist).
+  rewrite mat_vec_length. exact Hlen_M.
+Defined.
+
+Theorem tmat_vec_lipschitz :
+  forall (r c : nat) (M : Matrix r c) (u v : Vector c),
+    (vec_dist (proj1_sig (tmat_vec M u)) (proj1_sig (tmat_vec M v))
+     <= mat_inf_norm (proj1_sig M) * vec_dist (proj1_sig u) (proj1_sig v))%R.
+Proof.
+  intros r c M u v.
+  destruct M as [Mlist [Hlen_M Hrows]].
+  destruct u as [ulist Hlen_u].
+  destruct v as [vlist Hlen_v].
+  simpl.
+  apply mat_vec_lipschitz.
+  rewrite Hlen_u, Hlen_v. reflexivity.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ******************************************************************** *)
