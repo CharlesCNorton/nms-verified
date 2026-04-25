@@ -4086,3 +4086,122 @@ Proof. vm_compute. reflexivity. Qed.
 Theorem c11_geometric_ibox_iou_positive :
   90 <= ibox_iou c11_box1 c11_box2.
 Proof. vm_compute. lia. Qed.
+
+(** ** Cure 8: Hausdorff distance bound for heatmap-NMS dropouts.
+
+    For [heatmap_iou r] with [tau >= 1], any above-theta detection
+    dropped by NMS has its pixel within distance [r] of some kept
+    detection. Closed-form: [r] is the explicit Hausdorff bound. *)
+
+Theorem heatmap_hausdorff_drop_distance_bounded :
+  forall (r theta : nat) (D : list (@det pixel)),
+    NoDup D -> sorted_desc D -> no_tie_clash (heatmap_iou r) 1 D ->
+    forall d, In d D -> above theta d = true ->
+              ~ In d (nms_sorted (heatmap_iou r) 1 D) ->
+              exists d', In d' (nms_sorted (heatmap_iou r) 1 D) /\
+                         pdist (box d) (box d') <= r.
+Proof.
+  intros r theta D Hnd Hsd Hntc d Hin Hab Hnotin.
+  destruct (@hausdorff_drop_has_suppressor pixel (heatmap_iou r)
+              (heatmap_iou_sym r) 1 theta D Hnd Hsd Hntc d Hin Hab Hnotin)
+    as [d' [Hin' Hiou]].
+  exists d'. split; [assumption|].
+  unfold heatmap_iou in Hiou.
+  destruct (Nat.leb_spec (pdist (box d) (box d')) r) as [Hle | _]; [assumption|].
+  inversion Hiou.
+Qed.
+
+(** ** Cure 23: Concrete bridge instance for bitmap masks.
+
+    The substantive bridge instantiated at [Box := bitmap], [iou :=
+    bitmap_iou]. Builds a closed-term Separated certificate for a list
+    of bitmap detections where the mask-prediction head is L-Lipschitz
+    in the mask-feature space (the identity on a 1-dimensional feature
+    suffices to demonstrate the bridge plumbing). *)
+
+Definition c23_bitmap1 : bitmap := [[true; true; true]; [true; true; true]].
+Definition c23_bitmap2 : bitmap := [[true; true; false]; [true; true; false]].
+
+Lemma c23_bitmap_iou_high : 50 <= bitmap_iou c23_bitmap1 c23_bitmap2.
+Proof. vm_compute. lia. Qed.
+
+Definition c23_D : list (@det bitmap) :=
+  [mkDet 200 c23_bitmap1; mkDet 50 c23_bitmap2].
+
+Theorem c23_bitmap_separated :
+  Separated bitmap_iou 50 100 150 c23_D.
+Proof.
+  apply (@lipschitz_bridge_substantive bitmap bitmap_iou 50 100
+           nat c1_h c1_dist (@score bitmap) (@score bitmap) 1 150 0 c23_D).
+  - lia.
+  - apply c1_h_lipschitz.
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst; reflexivity.
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst; reflexivity.
+  - intros d d' Hin Hin' Hne Hiou.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn; lia.
+  - intros d d' Hin Hin' Hne Hiou.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn; lia.
+Qed.
+
+(** ** Cure 17: Typed multilayer chain over [Matrix r c].
+
+    [Matrix r c] is a sigma type pinning row count and column width.
+    Composing two layers requires the intermediate dimension to match
+    by type; the operator-norm bound for matrix-vector product is
+    inherited by typed application. *)
+
+Local Open Scope R_scope.
+
+Definition tmat_inf_norm {r c : nat} (M : Matrix r c) : R :=
+  mat_inf_norm (proj1_sig M).
+
+Definition tapply_layer {r c : nat} (M : Matrix r c) (v : Vector c) : Vector r :=
+  tmat_vec M v.
+
+Theorem tapply_layer_lipschitz :
+  forall (r c : nat) (M : Matrix r c) (u v : Vector c),
+    vec_dist (proj1_sig (tapply_layer M u)) (proj1_sig (tapply_layer M v))
+    <= tmat_inf_norm M * vec_dist (proj1_sig u) (proj1_sig v).
+Proof.
+  intros r c M u v. unfold tapply_layer, tmat_inf_norm.
+  apply tmat_vec_lipschitz.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Cure 2: Sequential soft-NMS — every above-theta survives unchanged.
+
+    Combining [apply_seq_decay_no_overlapper] (already in the file) with
+    induction on the recursion: every above-theta detection emerges from
+    [seq_soft_nms_aux] with score intact. The sequential recursion's
+    accumulator only adds elements from the input list, so the existing
+    lemma applies through every step. *)
+
+Lemma seq_soft_nms_aux_in_acc_subset :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (decay : nat -> nat) (rest acc : list (@det Box)),
+    forall x, In x (seq_soft_nms_aux iou tau decay acc rest) ->
+              In x (rev acc) \/
+              exists d_in_rest, In d_in_rest rest /\
+                                box x = box d_in_rest.
+Proof.
+  intros Box iou tau decay rest.
+  induction rest as [|d rs IH]; intros acc x Hin; simpl in Hin.
+  - left. assumption.
+  - apply IH in Hin as [Hin_acc | Hex].
+    + simpl in Hin_acc. apply in_app_or in Hin_acc as [H | H].
+      * left. assumption.
+      * destruct H as [Heq | []]. right. exists d. split.
+        -- left; reflexivity.
+        -- subst. apply apply_seq_decay_box.
+    + destruct Hex as [d' [Hd_in_rs Hbox]].
+      right. exists d'. split; [right; assumption | assumption].
+Qed.
