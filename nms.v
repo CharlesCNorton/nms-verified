@@ -2083,10 +2083,10 @@ Proof.
 Qed.
 
 (** ******************************************************************** *)
-(** *                          Part IV. Cures                            *)
+(** *                          Part IV. Extensions                       *)
 (** ******************************************************************** *)
 
-(** ** Cure 4 (a). Reflexivity-at-max for heatmap and ibox IoU. *)
+(** ** Reflexivity-at-max for heatmap and ibox IoU. *)
 
 Lemma abs_diff_refl : forall a, abs_diff a a = 0.
 Proof.
@@ -2138,7 +2138,7 @@ Proof.
   reflexivity.
 Qed.
 
-(** ** Cure 4 (b). Disjoint pairs have IoU zero. *)
+(** ** Disjoint pairs have IoU zero. *)
 
 Definition heatmap_disjoint (r : nat) (p q : pixel) : Prop := r < pdist p q.
 
@@ -2160,7 +2160,7 @@ Proof.
   rewrite Nat.mul_0_l, Nat.div_0_l by lia. reflexivity.
 Qed.
 
-(** ** Cure 13. Depth-N multilayer Lipschitz chain.
+(** ** Depth-N multilayer Lipschitz chain.
 
     Generalises [relu_two_layer_lipschitz] to an arbitrary list of weight
     matrices. The chain [v ↦ M_n (ReLU (M_{n-1} (... ReLU (M_1 v) ...)))]
@@ -2240,7 +2240,7 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ** Cure 17. Threshold-quantified converse: equality of [filter_above]
+(** ** Threshold-quantified converse: equality of [filter_above]
     at *every* threshold implies [Separated]. The naive converse
     ([converse_fails]) is broken by the empty-filter case; quantifying
     over threshold pins down exactly what NMS collapse characterises. *)
@@ -2270,7 +2270,7 @@ Proof.
   lia.
 Qed.
 
-(** ** Cure 25. Multi-class lift via [Box * Class]. Each detection carries
+(** ** Multi-class lift via [Box * Class]. Each detection carries
     a class tag; [class_iou] is the per-class IoU (zero across classes).
     Yields a multi-class collapse theorem matching torchvision's
     [batched_nms]. *)
@@ -2309,7 +2309,7 @@ Section MultiClass.
   Qed.
 End MultiClass.
 
-(** ** Cure 23. Concrete soft-NMS decay instances. *)
+(** ** Concrete soft-NMS decay instances. *)
 
 Definition linear_decay (s : nat) : nat := s / 2.
 
@@ -2358,7 +2358,7 @@ Proof.
   apply soft_nms_collapse_onepeak; [apply linear_decay_decreases | assumption].
 Qed.
 
-(** ** Cure 22. Concrete bitmap MaskNMS instance. *)
+(** ** Concrete bitmap MaskNMS instance. *)
 
 Definition bitmap : Type := list (list bool).
 
@@ -2438,7 +2438,7 @@ Proof.
   intros. apply (nms_collapse_onepeak bitmap_iou_sym); assumption.
 Qed.
 
-(** ** Cure 19. Complexity bound: NMS makes at most O(n^2) IoU evaluations.
+(** ** Complexity bound: NMS makes at most O(n^2) IoU evaluations.
 
     We define an explicit IoU-call counter [nms_iou_count] mirroring the
     structure of [nms_sorted] and prove it is bounded by [length D * length D].
@@ -2496,7 +2496,7 @@ Section Complexity.
   Qed.
 End Complexity.
 
-(** ** Cure 18. Hausdorff geometric bound.
+(** ** Hausdorff geometric bound.
 
     The above-theta detections in [D] dropped by NMS are not arbitrary —
     each has a high-IoU [box] relationship with some kept detection.
@@ -2557,7 +2557,7 @@ Proof.
       rewrite nms_sorted_equation. right. exact Hd'in.
 Qed.
 
-(** ** Cure 29. Quantisation transport: a [q]-step quantiser on scores
+(** ** Quantisation transport: a [q]-step quantiser on scores
     preserves [Separated] with margin reduced by [2*q]. Justifies
     post-training int8 quantisation: a Separated detector with margin
     [m + 2q] remains Separated with margin [m] after quantising scores
@@ -2621,7 +2621,7 @@ Proof.
     + lia.
 Qed.
 
-(** ** Cure 16. Decidable [Separated]: given decidable equality on [Box],
+(** ** Decidable [Separated]: given decidable equality on [Box],
     check the predicate by enumerating all pairs. *)
 
 Section SeparatedDec.
@@ -2723,7 +2723,7 @@ Section SeparatedDec.
   Qed.
 End SeparatedDec.
 
-(** ** Cure 26. Centerness preserves [Separated] when co-monotone with score.
+(** ** Centerness preserves [Separated] when co-monotone with score.
 
     In FCOS, centerness [c : Box -> nat] is a structural factor that
     is high at object centres and low at offsets. Empirically, centerness
@@ -2761,7 +2761,7 @@ Proof.
     apply Nat.mul_le_mono; assumption.
 Qed.
 
-(** ** Cure 31. Extraction to OCaml.
+(** ** Extraction to OCaml.
 
     [nms_sorted] and [filter_above] are constructive enough to extract
     cleanly. With [nat] erased to [int], [bool] kept native, and the
@@ -2793,7 +2793,7 @@ Extraction "nms_extracted.ml" nms_sorted filter_above bitmap_iou heatmap_iou
                               ibox_iou linear_decay step_decay
                               soft_nms quantise_list class_iou.
 
-(** ** Cure 15. Violation count is zero under [Separated 1].
+(** ** Violation count is zero under [Separated 1].
 
     Connects the qualitative collapse theorem and the quantitative
     robustness bound: under [Separated 1] there are no above-theta
@@ -2845,7 +2845,7 @@ Proof.
     apply (@above_no_violator_under_separated Box iou tau theta D d Hin Hab Hsep).
 Qed.
 
-(** ** Cure 28. Cross-task transfer. [Separated] is monotone in [iou]
+(** ** Cross-task transfer. [Separated] is monotone in [iou]
     pointwise and in [tau]: looser IoU or stricter [tau] preserve
     separation. A single backbone delivering [Separated] for box-IoU
     automatically delivers it for any per-task IoU bounded above by
@@ -2874,7 +2874,7 @@ Proof.
   apply Hsep; auto. lia.
 Qed.
 
-(** ** Cure 33. Empirical Pareto curve as monotonicity. The keystone
+(** ** Empirical Pareto curve as monotonicity. The keystone
     [nms_collapse_onepeak] plus [separated_zero_violation_count] give
     a closed-form Pareto: [Separated 1] implies a zero-gap NMS-free
     deployment graph. Empirical observations of "stronger recipe →
@@ -2896,7 +2896,7 @@ Proof.
   apply (nms_collapse_onepeak iou_sym_h Hnd Hsd Hop Hntc).
 Qed.
 
-(** ** Cure 27. Simplified DETR query-diversity invariant. DETR's
+(** ** Simplified DETR query-diversity invariant. DETR's
     "no NMS needed" claim instantiates [Separated] with the box IoU on
     DETR query outputs; query diversity is the property that distinct
     queries produce distinguishable boxes. *)
@@ -2915,7 +2915,7 @@ Proof.
   apply (pareto_separated_zero_gap ibox_iou_sym Hnd Hsd Hqd).
 Qed.
 
-(** ** Cure 30. Recipe-implies-hypothesis as a theorem. Phrased as a
+(** ** Recipe-implies-hypothesis as a theorem. Phrased as a
     fixed-point property: if a training process drives [violation_count]
     to zero (the empirical observation), the limit point is [Separated].
     The premise is the empirical claim; the theorem gives the formal
@@ -2941,7 +2941,7 @@ Proof.
   - apply Bool.not_true_is_false. assumption.
 Qed.
 
-(** ** Cure 24. Sequential soft-NMS. Per-element decay applied through
+(** ** Sequential soft-NMS. Per-element decay applied through
     earlier kept detections. Under one-peak, no above-[theta] detection
     has any earlier kept overlapper at IoU >= tau (since they would
     have higher score, contradicting one-peak), so its score is
@@ -3035,7 +3035,7 @@ Section SequentialSoftNMS.
   Qed.
 End SequentialSoftNMS.
 
-(** ** Cure 14. Worked three-layer example. *)
+(** ** Worked three-layer example. *)
 
 Local Open Scope R_scope.
 
@@ -3069,7 +3069,7 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ** Cure 12. Concrete bridge with [Feat := list nat]. The
+(** ** Concrete bridge with [Feat := list nat]. The
     [lipschitz_bridge_substantive] theorem instantiates with a nat-valued
     feature space and an L-infinity-style integer distance. The matrix-
     Lipschitz bound [mat_vec_lipschitz] discharges the L-Lipschitz
@@ -3118,7 +3118,7 @@ Proof.
                                        L m eps D); assumption.
 Qed.
 
-(** ** Cure 32. Unified-artifact note.
+(** ** Unified-artifact note.
 
     The empirical pipeline (FCOS training recipe + COCO mAP comparison +
     NMS-free deployment script) lives in companion repository
@@ -3127,7 +3127,7 @@ Qed.
     certify the output set; the empirical recipe demonstrates the
     invariant holds on a trained head. *)
 
-(** ** Cure 20. Reference greedy NMS algorithm.
+(** ** Reference greedy NMS algorithm.
 
     The standard imperative description: sort by score, iterate, keep a
     detection iff no previously kept detection has IoU >= tau. The
@@ -3177,4 +3177,174 @@ Section ReferenceGreedyNMS.
     apply greedy_nms_aux_subset in Hin as [H | H]; [assumption | contradiction].
   Qed.
 End ReferenceGreedyNMS.
+
+(** ** Gaussian peak heatmap satisfies [Separated].
+
+    Constructive instantiation: a heatmap with peaks at well-separated
+    pixel centres (pairwise pdist > r) produces a detection list that
+    satisfies [Separated] for any [theta] and [slack]. The
+    [heatmap_from_peaks] generator builds detections at specified
+    pixel positions. The proof reduces to [heatmap_pixel_separation]. *)
+
+Definition heatmap_from_peaks (peaks : list pixel) (intensity : nat) :
+    list (@det pixel) :=
+  map (fun p => mkDet intensity p) peaks.
+
+Theorem gaussian_heatmap_separated :
+  forall (r theta slack : nat) (peaks : list pixel) (intensity : nat),
+    (forall p q, In p peaks -> In q peaks -> p <> q -> r < pdist p q) ->
+    Separated (heatmap_iou r) 1 theta slack
+              (heatmap_from_peaks peaks intensity).
+Proof.
+  intros r theta slack peaks intensity Hpsep.
+  apply heatmap_pixel_separation.
+  intros d d' Hin Hin' Hne.
+  apply in_map_iff in Hin as [p [Hd Hp_in]].
+  apply in_map_iff in Hin' as [q [Hd' Hq_in]].
+  subst d d'.
+  assert (Hpq : p <> q).
+  { intros Heq. subst. apply Hne. reflexivity. }
+  simpl. apply Hpsep; assumption.
+Qed.
+
+(** Combined: a Gaussian-peak heatmap satisfies the keystone NMS
+    collapse, with no above-threshold pair having heatmap-IoU >= 1. *)
+
+Theorem gaussian_heatmap_nms_collapse :
+  forall (r theta : nat) (peaks : list pixel) (intensity : nat),
+    NoDup (heatmap_from_peaks peaks intensity) ->
+    sorted_desc (heatmap_from_peaks peaks intensity) ->
+    (forall p q, In p peaks -> In q peaks -> p <> q -> r < pdist p q) ->
+    filter_above theta (heatmap_from_peaks peaks intensity) =
+    filter_above theta
+      (nms_sorted (heatmap_iou r) 1 (heatmap_from_peaks peaks intensity)).
+Proof.
+  intros r theta peaks intensity Hnd Hsd Hpsep.
+  pose proof (@gaussian_heatmap_separated r theta 1 peaks intensity Hpsep) as Hsep.
+  apply (pareto_separated_zero_gap (heatmap_iou_sym r)
+                                    Hnd Hsd Hsep).
+Qed.
+
+(** ** Sorting via insertion: lift NMS-collapse to unsorted input. *)
+
+From Stdlib Require Import Permutation.
+
+Section InsertionSort.
+  Variable Box : Type.
+
+  Fixpoint insert_desc (d : @det Box) (l : list (@det Box)) : list (@det Box) :=
+    match l with
+    | [] => [d]
+    | x :: xs =>
+        if Nat.leb (score x) (score d)
+        then d :: l
+        else x :: insert_desc d xs
+    end.
+
+  Fixpoint sort_desc (l : list (@det Box)) : list (@det Box) :=
+    match l with
+    | [] => []
+    | x :: xs => insert_desc x (sort_desc xs)
+    end.
+
+  Lemma insert_desc_perm :
+    forall d l, Permutation (d :: l) (insert_desc d l).
+  Proof.
+    intros d l. revert d.
+    induction l as [|x xs IH]; intros d; simpl; [apply Permutation_refl|].
+    destruct (Nat.leb_spec (score x) (score d)).
+    - apply Permutation_refl.
+    - eapply Permutation_trans.
+      + apply perm_swap.
+      + apply perm_skip. apply IH.
+  Qed.
+
+  Lemma sort_desc_perm : forall l, Permutation l (sort_desc l).
+  Proof.
+    induction l as [|x xs IH]; simpl; [apply Permutation_refl|].
+    eapply Permutation_trans; [|apply insert_desc_perm].
+    apply perm_skip. assumption.
+  Qed.
+
+  Lemma insert_desc_in :
+    forall d l x, In x (insert_desc d l) -> x = d \/ In x l.
+  Proof.
+    intros d l. induction l as [|y ys IH]; intros x Hin; simpl in Hin.
+    - destruct Hin as [Heq | []]; left; symmetry; assumption.
+    - destruct (Nat.leb (score y) (score d)) eqn:E.
+      + simpl in Hin. destruct Hin as [Heq | Hin']; [left; symmetry; assumption|].
+        right. assumption.
+      + destruct Hin as [Heq | Hin'].
+        * right. left. assumption.
+        * apply IH in Hin' as [Heq | Hin']; [left; assumption|].
+          right. right. assumption.
+  Qed.
+
+  Lemma insert_desc_sorted :
+    forall d l, sorted_desc l -> sorted_desc (insert_desc d l).
+  Proof.
+    intros d l. revert d.
+    induction l as [|x xs IH]; intros d Hsd; simpl.
+    - simpl. split; [intros d' []|exact I].
+    - destruct (Nat.leb_spec (score x) (score d)) as [Hle | Hgt].
+      + simpl. split.
+        * intros d' Hd'. simpl in Hd'. destruct Hd' as [Heq | Hin].
+          -- subst. assumption.
+          -- pose proof (sorted_desc_head_bound Hsd d' Hin). lia.
+        * assumption.
+      + simpl in Hsd. destruct Hsd as [Hbound Hxs].
+        split.
+        * intros d' Hd'. apply insert_desc_in in Hd' as [Heq | Hin].
+          -- subst. lia.
+          -- apply Hbound. assumption.
+        * apply IH. assumption.
+  Qed.
+
+  Lemma sort_desc_sorted : forall l, sorted_desc (sort_desc l).
+  Proof.
+    induction l as [|x xs IH]; simpl; [exact I|].
+    apply insert_desc_sorted. assumption.
+  Qed.
+
+  Lemma sort_desc_NoDup :
+    forall l, NoDup l -> NoDup (sort_desc l).
+  Proof.
+    intros l Hnd.
+    eapply Permutation_NoDup; [apply sort_desc_perm | assumption].
+  Qed.
+End InsertionSort.
+
+Lemma permutation_filter :
+  forall {A : Type} (P : A -> bool) (l l' : list A),
+    Permutation l l' -> Permutation (filter P l) (filter P l').
+Proof.
+  intros A P l l' Hperm. induction Hperm; simpl.
+  - apply Permutation_refl.
+  - destruct (P x); [apply perm_skip; assumption | assumption].
+  - destruct (P x), (P y); try apply perm_swap; apply Permutation_refl.
+  - eapply Permutation_trans; eassumption.
+Qed.
+
+Theorem nms_collapse_unsorted :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau theta : nat) (D : list (@det Box)),
+      NoDup D ->
+      one_peak iou tau theta (sort_desc D) ->
+      no_tie_clash iou tau (sort_desc D) ->
+      Permutation (filter_above theta D)
+                  (filter_above theta
+                     (nms_sorted iou tau (sort_desc D))).
+Proof.
+  intros Box iou iou_sym_h tau theta D Hnd Hop Hntc.
+  pose proof (sort_desc_perm D) as Hperm.
+  pose proof (permutation_filter (above theta) Hperm) as Hperm_filter.
+  pose proof (@sort_desc_NoDup _ D Hnd) as Hnd_sorted.
+  pose proof (sort_desc_sorted D) as Hsd.
+  pose proof (@nms_collapse_onepeak Box iou iou_sym_h tau theta
+                                    (sort_desc D) Hnd_sorted Hsd Hop Hntc) as Heq.
+  unfold filter_above in *.
+  rewrite <- Heq in Hperm_filter.
+  exact Hperm_filter.
+Qed.
 
