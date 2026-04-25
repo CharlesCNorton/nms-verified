@@ -54,6 +54,7 @@ From Stdlib Require Import Lia.
 From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Arith.Wf_nat.
+From Stdlib Require Import Recdef.
 Import ListNotations.
 
 Set Implicit Arguments.
@@ -521,16 +522,26 @@ Section Collapse.
 
   Definition filter_above (D : list det) : list det := filter above D.
 
-  Fixpoint nms_aux (fuel : nat) (D : list det) : list det :=
-    match fuel, D with
-    | _, [] => []
-    | 0, _ :: _ => []
-    | S fuel', d :: rest =>
-        d :: nms_aux fuel'
-              (filter (fun d' => negb (Nat.leb tau (iou (box d) (box d')))) rest)
-    end.
+  Lemma filter_length_le :
+    forall (A : Type) (P : A -> bool) (L : list A),
+      length (filter P L) <= length L.
+  Proof.
+    intros A P L. induction L as [|x L' IH]; simpl; [lia|].
+    destruct (P x); simpl; lia.
+  Qed.
 
-  Definition nms_sorted (D : list det) : list det := nms_aux (length D) D.
+  Function nms_sorted (D : list det) {measure (@length det) D} : list det :=
+    match D with
+    | [] => []
+    | d :: rest =>
+        d :: nms_sorted (filter (fun d' => negb (Nat.leb tau (iou (box d) (box d')))) rest)
+    end.
+  Proof.
+    intros D d rest Heq. simpl.
+    pose proof (filter_length_le
+                  (fun d' => negb (Nat.leb tau (iou (box d) (box d')))) rest) as HL.
+    lia.
+  Defined.
 
   Fixpoint sorted_desc (D : list det) : Prop :=
     match D with
@@ -680,14 +691,6 @@ Section Collapse.
     - assumption.
   Qed.
 
-  Lemma filter_length_le :
-    forall (A : Type) (P : A -> bool) (L : list A),
-      length (filter P L) <= length L.
-  Proof.
-    intros A P L. induction L as [|x L' IH]; simpl; [lia|].
-    destruct (P x); simpl; lia.
-  Qed.
-
   Lemma sorted_desc_tail :
     forall d rest, sorted_desc (d :: rest) -> sorted_desc rest.
   Proof. intros d rest [_ H]. exact H. Qed.
@@ -776,25 +779,28 @@ Section Collapse.
       + rewrite iou_sym. assumption.
   Qed.
 
-  Lemma nms_aux_collapse :
-    forall fuel D,
-      length D <= fuel ->
+  (** ** Keystone theorem. *)
+
+  Theorem nms_collapse_onepeak :
+    forall D,
       NoDup D ->
       sorted_desc D ->
       one_peak D ->
       no_tie_clash D ->
-      filter_above (nms_aux fuel D) = filter_above D.
+      filter_above (nms_sorted D) = filter_above D.
   Proof.
-    induction fuel as [|fuel' IH]; intros D Hlen Hnd Hsd Hop Hntc.
-    - destruct D as [|d rest]; [reflexivity|].
-      simpl in Hlen; lia.
-    - destruct D as [|d0 rest]; [reflexivity|].
-      simpl.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length det))).
+    intros Hnd Hsd Hop Hntc.
+    destruct D as [|d0 rest].
+    - rewrite nms_sorted_equation. reflexivity.
+    - rewrite nms_sorted_equation.
       set (P := fun d' => negb (Nat.leb tau (iou (box d0) (box d')))).
       set (restf := filter P rest).
-      assert (Hlen_rest : length rest <= fuel') by (simpl in Hlen; lia).
-      assert (Hlen_restf : length restf <= fuel').
-      { unfold restf. pose proof (filter_length_le P rest) as HL. lia. }
+      assert (Hlt_restf : ltof _ (@length det) restf (d0 :: rest)).
+      { unfold ltof, restf. simpl.
+        pose proof (filter_length_le P rest) as HL. lia. }
       assert (Hnd_rest : NoDup rest) by (inversion Hnd; assumption).
       assert (Hsd_rest : sorted_desc rest) by (apply (sorted_desc_tail Hsd)).
       assert (Hop_rest : one_peak rest).
@@ -813,7 +819,7 @@ Section Collapse.
       { eapply one_peak_subset; [exact Hsub_restf|assumption]. }
       assert (Hntc_restf : no_tie_clash restf).
       { eapply no_tie_clash_subset; [exact Hsub_restf|assumption]. }
-      specialize (IH restf Hlen_restf Hnd_restf Hsd_restf Hop_restf Hntc_restf).
+      specialize (IH restf Hlt_restf Hnd_restf Hsd_restf Hop_restf Hntc_restf).
       unfold filter_above in *. simpl.
       destruct (above d0) eqn:Hab.
       + f_equal. rewrite IH. unfold restf.
@@ -843,21 +849,6 @@ Section Collapse.
           - apply IHx. intros d Hd; apply Hrest_low; right; assumption. }
         rewrite <- Hfilter_restf_nil.
         exact IH.
-  Qed.
-
-  (** ** Keystone theorem. *)
-
-  Theorem nms_collapse_onepeak :
-    forall D,
-      NoDup D ->
-      sorted_desc D ->
-      one_peak D ->
-      no_tie_clash D ->
-      filter_above (nms_sorted D) = filter_above D.
-  Proof.
-    intros D Hnd Hsd Hop Hntc.
-    unfold nms_sorted.
-    apply (@nms_aux_collapse (length D) D (Nat.le_refl _) Hnd Hsd Hop Hntc).
   Qed.
 
   (** ** Corollary: NMS reduces to threshold filter under [Separated 1]. *)
@@ -981,74 +972,6 @@ Section Collapse.
       tau <= iou (box d) (box d') /\
       score d < score d'.
 
-  Lemma nms_aux_preserves_non_violator :
-    forall fuel D d,
-      length D <= fuel ->
-      NoDup D ->
-      sorted_desc D ->
-      no_tie_clash D ->
-      In d D ->
-      above d = true ->
-      (forall d', In d' D -> tau <= iou (box d) (box d') ->
-                  ~ score d < score d') ->
-      In d (nms_aux fuel D).
-  Proof.
-    induction fuel as [|fuel' IH]; intros D d Hlen Hnd Hsd Hntc Hin Hab Hno.
-    - destruct D; [contradiction|]. simpl in Hlen. lia.
-    - destruct D as [|d0 rest]; [contradiction|].
-      simpl.
-      destruct Hin as [Heq | Hin_rest].
-      + subst d0. left; reflexivity.
-      + right.
-        set (P := fun d' => negb (Nat.leb tau (iou (box d0) (box d')))).
-        set (restf := filter P rest).
-        assert (Hd_in_restf : In d restf).
-        { unfold restf, P. apply filter_In. split; [assumption|].
-          apply negb_true_iff. apply Nat.leb_gt.
-          destruct (Nat.eq_dec (score d) (score d0)) as [Heq_s | Hne_s].
-          - assert (Hd_ne_d0 : d <> d0).
-            { inversion Hnd as [|? ? Hnin _]; subst.
-              intro Hco. subst d. contradiction. }
-            pose proof (Hntc d0 d
-                          (or_introl eq_refl) (or_intror Hin_rest))
-              as Hclash.
-            specialize (Hclash (fun Hc => Hd_ne_d0 (eq_sym Hc)) (eq_sym Heq_s)).
-            assumption.
-          - simpl in Hsd. destruct Hsd as [Hbound _].
-            specialize (Hbound d Hin_rest).
-            assert (Hlt : score d < score d0) by lia.
-            destruct (Nat.leb tau (iou (box d0) (box d))) eqn:Eiou.
-            + exfalso. apply Nat.leb_le in Eiou.
-              assert (Hin_d0 : In d0 (d0 :: rest)) by (left; reflexivity).
-              rewrite iou_sym in Eiou.
-              apply (Hno d0 Hin_d0 Eiou Hlt).
-            + apply Nat.leb_gt in Eiou. assumption. }
-        assert (Hlen_restf : length restf <= fuel').
-        { unfold restf, P. pose proof (filter_length_le
-            (fun d' => negb (Nat.leb tau (iou (box d0) (box d')))) rest).
-          simpl in Hlen. lia. }
-        assert (Hnd_restf : NoDup restf).
-        { unfold restf. apply NoDup_filter. inversion Hnd; assumption. }
-        assert (Hsd_restf : sorted_desc restf).
-        { unfold restf. apply sorted_desc_filter.
-          apply (sorted_desc_tail Hsd). }
-        assert (Hntc_restf : no_tie_clash restf).
-        { unfold restf.
-          intros x y Hx Hy Hne Heqxy.
-          apply filter_In in Hx as [Hx _].
-          apply filter_In in Hy as [Hy _].
-          apply Hntc; [right; assumption | right; assumption
-                     | assumption | assumption]. }
-        assert (Hno_restf :
-                  forall d', In d' restf -> tau <= iou (box d) (box d') ->
-                             ~ score d < score d').
-        { intros d' Hd' Hiou Hlt.
-          apply filter_In in Hd' as [Hd' _].
-          apply (Hno d' (or_intror Hd') Hiou Hlt). }
-        apply (IH restf d Hlen_restf Hnd_restf Hsd_restf Hntc_restf
-                  Hd_in_restf Hab Hno_restf).
-  Qed.
-
   Theorem above_non_violator_survives :
     forall D d,
       NoDup D -> sorted_desc D -> no_tie_clash D ->
@@ -1057,13 +980,64 @@ Section Collapse.
       (~ above_violator D d) ->
       In d (nms_sorted D).
   Proof.
-    intros D d Hnd Hsd Hntc Hin Hab Hnv.
-    unfold nms_sorted.
-    apply (@nms_aux_preserves_non_violator (length D) D d
-             (Nat.le_refl _) Hnd Hsd Hntc Hin Hab).
-    intros d' Hin' Hiou Hlt.
-    apply Hnv. split; [assumption|].
-    exists d'. split; [assumption|]. split; assumption.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length det))).
+    intros d Hnd Hsd Hntc Hin Hab Hnv.
+    destruct D as [|d0 rest]; [contradiction|].
+    rewrite nms_sorted_equation.
+    destruct Hin as [Heq | Hin_rest].
+    - subst d0. left; reflexivity.
+    - right.
+      set (P := fun d' => negb (Nat.leb tau (iou (box d0) (box d')))).
+      set (restf := filter P rest).
+      assert (Hno : forall d', In d' (d0 :: rest) ->
+                 tau <= iou (box d) (box d') -> ~ score d < score d').
+      { intros d' Hin' Hiou Hlt.
+        apply Hnv. split; [assumption|].
+        exists d'. split; [assumption|]. split; assumption. }
+      assert (Hd_in_restf : In d restf).
+      { unfold restf, P. apply filter_In. split; [assumption|].
+        apply negb_true_iff. apply Nat.leb_gt.
+        destruct (Nat.eq_dec (score d) (score d0)) as [Heq_s | Hne_s].
+        - assert (Hd_ne_d0 : d <> d0).
+          { inversion Hnd as [|? ? Hnin _]; subst.
+            intro Hco. subst d. contradiction. }
+          pose proof (Hntc d0 d
+                        (or_introl eq_refl) (or_intror Hin_rest))
+            as Hclash.
+          specialize (Hclash (fun Hc => Hd_ne_d0 (eq_sym Hc)) (eq_sym Heq_s)).
+          assumption.
+        - simpl in Hsd. destruct Hsd as [Hbound _].
+          specialize (Hbound d Hin_rest).
+          assert (Hlt : score d < score d0) by lia.
+          destruct (Nat.leb tau (iou (box d0) (box d))) eqn:Eiou.
+          + exfalso. apply Nat.leb_le in Eiou.
+            assert (Hin_d0 : In d0 (d0 :: rest)) by (left; reflexivity).
+            rewrite iou_sym in Eiou.
+            apply (Hno d0 Hin_d0 Eiou Hlt).
+          + apply Nat.leb_gt in Eiou. assumption. }
+      assert (Hlt_restf : ltof _ (@length det) restf (d0 :: rest)).
+      { unfold ltof, restf. simpl.
+        pose proof (filter_length_le P rest) as HL. lia. }
+      assert (Hnd_restf : NoDup restf).
+      { unfold restf. apply NoDup_filter. inversion Hnd; assumption. }
+      assert (Hsd_restf : sorted_desc restf).
+      { unfold restf. apply sorted_desc_filter.
+        apply (sorted_desc_tail Hsd). }
+      assert (Hntc_restf : no_tie_clash restf).
+      { unfold restf.
+        intros x y Hx Hy Hne Heqxy.
+        apply filter_In in Hx as [Hx _].
+        apply filter_In in Hy as [Hy _].
+        apply Hntc; [right; assumption | right; assumption
+                   | assumption | assumption]. }
+      assert (Hnv_restf : ~ above_violator restf d).
+      { intros [_ [d' [Hin' [Hiou Hlt]]]].
+        apply filter_In in Hin' as [Hin' _].
+        apply (Hno d' (or_intror Hin') Hiou Hlt). }
+      apply (IH restf Hlt_restf d Hnd_restf Hsd_restf Hntc_restf
+                Hd_in_restf Hab Hnv_restf).
   Qed.
 
   Corollary above_non_violator_survives_under_separation :
@@ -1142,35 +1116,53 @@ Section Collapse.
     intros D Hnd. unfold non_violator_above. apply NoDup_filter. assumption.
   Qed.
 
-  Lemma nms_aux_subset :
-    forall fuel D x, In x (nms_aux fuel D) -> In x D.
+  Lemma nms_sorted_subset :
+    forall D x, In x (nms_sorted D) -> In x D.
   Proof.
-    induction fuel as [|fuel' IH]; intros D x Hin; simpl in Hin.
-    - destruct D; [contradiction | contradiction].
-    - destruct D as [|d rest]; [contradiction|].
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length det))).
+    intros x Hin.
+    destruct D as [|d rest].
+    - rewrite nms_sorted_equation in Hin. contradiction.
+    - rewrite nms_sorted_equation in Hin.
       destruct Hin as [Heq | Hin'].
       + left; assumption.
-      + right. apply IH in Hin'. apply filter_In in Hin'. tauto.
+      + right.
+        set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+        assert (Hlt : ltof _ (@length det) (filter P rest) (d :: rest)).
+        { unfold ltof. simpl.
+          pose proof (filter_length_le P rest) as HL. lia. }
+        apply IH in Hin'; [|exact Hlt].
+        apply filter_In in Hin'. tauto.
   Qed.
 
-  Lemma nms_aux_NoDup :
-    forall fuel D, NoDup D -> NoDup (nms_aux fuel D).
+  Lemma nms_sorted_NoDup :
+    forall D, NoDup D -> NoDup (nms_sorted D).
   Proof.
-    induction fuel as [|fuel' IH]; intros D Hnd; simpl.
-    - destruct D; constructor.
-    - destruct D as [|d rest]; [constructor|].
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length det))).
+    intros Hnd.
+    destruct D as [|d rest].
+    - rewrite nms_sorted_equation. constructor.
+    - rewrite nms_sorted_equation.
       inversion Hnd; subst.
+      set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+      assert (Hlt : ltof _ (@length det) (filter P rest) (d :: rest)).
+      { unfold ltof. simpl.
+        pose proof (filter_length_le P rest) as HL. lia. }
       constructor.
-      + intros Hin. apply nms_aux_subset in Hin.
+      + intros Hin. apply nms_sorted_subset in Hin.
         apply filter_In in Hin as [Hin _]. contradiction.
-      + apply IH. apply NoDup_filter. assumption.
+      + apply IH; [exact Hlt | apply NoDup_filter; assumption].
   Qed.
 
   Lemma filter_above_nms_NoDup :
     forall D, NoDup D -> NoDup (filter_above (nms_sorted D)).
   Proof.
-    intros D Hnd. unfold filter_above, nms_sorted.
-    apply NoDup_filter. apply nms_aux_NoDup. assumption.
+    intros D Hnd. unfold filter_above.
+    apply NoDup_filter. apply nms_sorted_NoDup. assumption.
   Qed.
 
   Theorem nms_quantitative_bound :
@@ -1263,17 +1255,17 @@ Proof.
   assert (bd = bd') by lia. subst. reflexivity.
 Qed.
 
-Lemma nms_aux_drops_all_const_iou :
-  forall fuel (d0 : @det nat) (rest : list (@det nat)),
-    nms_aux triv_iou 50 (S fuel) (d0 :: rest) = [d0].
+Lemma nms_sorted_drops_all_const_iou :
+  forall (d0 : @det nat) (rest : list (@det nat)),
+    nms_sorted triv_iou 50 (d0 :: rest) = [d0].
 Proof.
-  intros fuel d0 rest.
-  cbn [nms_aux]. f_equal.
+  intros d0 rest.
+  rewrite nms_sorted_equation. f_equal.
   assert (Hf : forall L : list (@det nat),
                  filter (fun d' => negb (Nat.leb 50 (triv_iou (box d0) (box d')))) L = []).
   { intros L. induction L as [|d rest' IH]; simpl; [reflexivity|].
     unfold triv_iou. simpl. assumption. }
-  rewrite Hf. destruct fuel; reflexivity.
+  rewrite Hf. rewrite nms_sorted_equation. reflexivity.
 Qed.
 
 Lemma nms_sorted_build_tight :
@@ -1281,10 +1273,9 @@ Lemma nms_sorted_build_tight :
     nms_sorted triv_iou 50 (build_tight n) =
       match n with O => [] | S k => [mkDet (S k) k] end.
 Proof.
-  destruct n as [|k]; [reflexivity|].
-  unfold nms_sorted. rewrite build_tight_length.
+  destruct n as [|k]; [rewrite nms_sorted_equation; reflexivity|].
   cbn [build_tight].
-  apply nms_aux_drops_all_const_iou.
+  apply nms_sorted_drops_all_const_iou.
 Qed.
 
 Lemma filter_above_1_build_tight :
