@@ -1,0 +1,14 @@
+*.vo
+*.vok
+*.vos
+*.glob
+*.aux
+.*.aux
+.lia.cache
+.nia.cache
+.Makefile.d
+Makefile
+Makefile.conf
+_CoqProject
+nms_extracted.ml
+nms_extracted.mli

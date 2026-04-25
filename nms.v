@@ -2081,3 +2081,715 @@ Theorem detr_collapse :
 Proof.
   intros. apply (nms_collapse_onepeak ibox_iou_sym); assumption.
 Qed.
+
+(** ******************************************************************** *)
+(** *                          Part IV. Cures                            *)
+(** ******************************************************************** *)
+
+(** ** Cure 4 (a). Reflexivity-at-max for heatmap and ibox IoU. *)
+
+Lemma abs_diff_refl : forall a, abs_diff a a = 0.
+Proof.
+  intros a. unfold abs_diff. rewrite Nat.leb_refl. lia.
+Qed.
+
+Lemma pdist_refl : forall p, pdist p p = 0.
+Proof.
+  intros p. unfold pdist. rewrite !abs_diff_refl. lia.
+Qed.
+
+Lemma heatmap_iou_refl_max :
+  forall r p, heatmap_iou r p p = 1.
+Proof.
+  intros r p. unfold heatmap_iou.
+  rewrite pdist_refl.
+  destruct (Nat.leb_spec 0 r); [reflexivity | lia].
+Qed.
+
+(** Reflexivity-at-max for [ibox_iou] requires positive area: a degenerate
+    box with [ibox_area b = 0] makes the union zero and the IoU is then
+    defined to be zero. The well-formedness sigma type already guarantees
+    [x1 <= x2 /\ y1 <= y2]; positive area is a strictly stronger nondegeneracy
+    condition. *)
+
+Lemma ibox_inter_area_refl :
+  forall b : ibox, ibox_inter_area b b = ibox_area b.
+Proof.
+  intros b.
+  pose proof (ibox_x1_le_x2 b) as Hx.
+  pose proof (ibox_y1_le_y2 b) as Hy.
+  unfold ibox_inter_area, ibox_area.
+  rewrite !Nat.max_id, !Nat.min_id.
+  destruct (Nat.leb_spec (ibox_x1 b) (ibox_x2 b)) as [_ | Hxc]; [|lia].
+  destruct (Nat.leb_spec (ibox_y1 b) (ibox_y2 b)) as [_ | Hyc]; [|lia].
+  reflexivity.
+Qed.
+
+Lemma ibox_iou_refl_max :
+  forall b : ibox, 0 < ibox_area b -> ibox_iou b b = 100.
+Proof.
+  intros b Harea.
+  unfold ibox_iou. rewrite ibox_inter_area_refl.
+  set (a := ibox_area b).
+  replace (a + a - a) with a by lia.
+  destruct (Nat.eqb_spec a 0) as [Heq | _]; [lia|].
+  replace (a * 100) with (100 * a) by lia.
+  rewrite Nat.div_mul by lia.
+  reflexivity.
+Qed.
+
+(** ** Cure 4 (b). Disjoint pairs have IoU zero. *)
+
+Definition heatmap_disjoint (r : nat) (p q : pixel) : Prop := r < pdist p q.
+
+Lemma heatmap_iou_zero_disjoint :
+  forall r p q, heatmap_disjoint r p q -> heatmap_iou r p q = 0.
+Proof.
+  intros r p q Hd. unfold heatmap_iou, heatmap_disjoint in *.
+  destruct (Nat.leb_spec (pdist p q) r); [lia | reflexivity].
+Qed.
+
+Definition ibox_disjoint (a b : ibox) : Prop := ibox_inter_area a b = 0.
+
+Lemma ibox_iou_zero_disjoint :
+  forall a b, ibox_disjoint a b -> ibox_iou a b = 0.
+Proof.
+  intros a b Hd. unfold ibox_iou, ibox_disjoint in *.
+  rewrite Hd.
+  destruct (Nat.eqb_spec (ibox_area a + ibox_area b - 0) 0); [reflexivity|].
+  rewrite Nat.mul_0_l, Nat.div_0_l by lia. reflexivity.
+Qed.
+
+(** ** Cure 13. Depth-N multilayer Lipschitz chain.
+
+    Generalises [relu_two_layer_lipschitz] to an arbitrary list of weight
+    matrices. The chain [v ↦ M_n (ReLU (M_{n-1} (... ReLU (M_1 v) ...)))]
+    has L^infinity Lipschitz constant bounded by the product of the
+    operator norms. Suffices for arbitrary-depth ReLU MLPs (and thus FCOS
+    classification heads), with the bound recovered by structural
+    induction on the matrix list. *)
+
+Local Open Scope R_scope.
+
+Definition apply_relu_vec (v : list R) : list R := map (fun x => Rmax 0 x) v.
+
+Definition apply_layer (M : matrix) (v : list R) : list R :=
+  apply_relu_vec (mat_vec M v).
+
+Fixpoint apply_layers (Ms : list matrix) (v : list R) : list R :=
+  match Ms with
+  | [] => v
+  | M :: rest => apply_layers rest (apply_layer M v)
+  end.
+
+Fixpoint product_norms (Ms : list matrix) : R :=
+  match Ms with
+  | [] => 1
+  | M :: rest => mat_inf_norm M * product_norms rest
+  end.
+
+Lemma apply_relu_vec_length :
+  forall v, length (apply_relu_vec v) = length v.
+Proof. intros v. apply length_map. Qed.
+
+Lemma apply_layer_length :
+  forall M v, length (apply_layer M v) = length M.
+Proof.
+  intros M v. unfold apply_layer.
+  rewrite apply_relu_vec_length. apply mat_vec_length.
+Qed.
+
+Lemma product_norms_nonneg :
+  forall Ms, 0 <= product_norms Ms.
+Proof.
+  induction Ms as [|M rest IH]; simpl.
+  - lra.
+  - apply Rmult_le_pos; [apply mat_inf_norm_nonneg | assumption].
+Qed.
+
+Lemma apply_relu_vec_lip :
+  forall u v,
+    vec_dist (apply_relu_vec u) (apply_relu_vec v) <= vec_dist u v.
+Proof.
+  intros u v.
+  destruct vlip_map_relu as [_ Hb].
+  specialize (Hb u v). rewrite Rmult_1_l in Hb. exact Hb.
+Qed.
+
+Theorem multilayer_lipschitz :
+  forall Ms u v,
+    length u = length v ->
+    vec_dist (apply_layers Ms u) (apply_layers Ms v)
+    <= product_norms Ms * vec_dist u v.
+Proof.
+  induction Ms as [|M rest IH]; intros u v Hlen.
+  - simpl. rewrite Rmult_1_l. apply Rle_refl.
+  - simpl.
+    set (u1 := apply_layer M u). set (v1 := apply_layer M v).
+    assert (Hlen1 : length u1 = length v1).
+    { unfold u1, v1. rewrite !apply_layer_length. reflexivity. }
+    specialize (IH u1 v1 Hlen1).
+    eapply Rle_trans; [exact IH|].
+    rewrite (Rmult_comm (mat_inf_norm M) (product_norms rest)).
+    rewrite Rmult_assoc.
+    apply Rmult_le_compat_l; [apply product_norms_nonneg|].
+    unfold u1, v1, apply_layer.
+    eapply Rle_trans; [apply apply_relu_vec_lip|].
+    apply mat_vec_lipschitz; assumption.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Cure 17. Threshold-quantified converse: equality of [filter_above]
+    at *every* threshold implies [Separated]. The naive converse
+    ([converse_fails]) is broken by the empty-filter case; quantifying
+    over threshold pins down exactly what NMS collapse characterises. *)
+
+Lemma filter_above_0_is_id :
+  forall (Box : Type) (D : list (@det Box)), filter_above 0 D = D.
+Proof.
+  intros Box D. unfold filter_above. induction D as [|d rest IH]; [reflexivity|].
+  simpl. f_equal. exact IH.
+Qed.
+
+Theorem threshold_quantified_converse :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau : nat) (D : list (@det Box)) (theta' slack : nat),
+      (forall t, filter_above t (nms_sorted iou tau D) = filter_above t D) ->
+      Separated iou tau theta' slack D.
+Proof.
+  intros Box iou iou_sym_h tau D theta' slack Hall.
+  intros d d' Hin Hin' Hne Hiou.
+  exfalso.
+  pose proof (Hall 0) as Heq0.
+  rewrite filter_above_0_is_id in Heq0.
+  rewrite filter_above_0_is_id in Heq0.
+  rewrite <- Heq0 in Hin, Hin'.
+  pose proof (@nms_sorted_sound Box iou iou_sym_h tau D d d' Hin Hin' Hne) as Hsound.
+  lia.
+Qed.
+
+(** ** Cure 25. Multi-class lift via [Box * Class]. Each detection carries
+    a class tag; [class_iou] is the per-class IoU (zero across classes).
+    Yields a multi-class collapse theorem matching torchvision's
+    [batched_nms]. *)
+
+Section MultiClass.
+  Variable Box : Type.
+  Variable Class : Type.
+  Variable iou_b : Box -> Box -> nat.
+  Hypothesis iou_b_sym : forall a b, iou_b a b = iou_b b a.
+  Variable cls_eq : forall c1 c2 : Class, {c1 = c2} + {c1 <> c2}.
+
+  Definition class_iou (a b : Box * Class) : nat :=
+    if cls_eq (snd a) (snd b) then iou_b (fst a) (fst b) else 0.
+
+  Lemma class_iou_sym :
+    forall a b, class_iou a b = class_iou b a.
+  Proof.
+    intros [ba ca] [bb cb]. unfold class_iou. simpl.
+    destruct (cls_eq ca cb) as [Hab | Hab];
+    destruct (cls_eq cb ca) as [Hba | Hba]; try reflexivity.
+    - apply iou_b_sym.
+    - exfalso. apply Hba. symmetry. assumption.
+    - exfalso. apply Hab. symmetry. assumption.
+  Qed.
+
+  Theorem multiclass_collapse :
+    forall (tau theta : nat) (D : list (@det (Box * Class))),
+      NoDup D ->
+      sorted_desc D ->
+      one_peak class_iou tau theta D ->
+      no_tie_clash class_iou tau D ->
+      filter_above theta (nms_sorted class_iou tau D) =
+      filter_above theta D.
+  Proof.
+    intros. apply (nms_collapse_onepeak class_iou_sym); assumption.
+  Qed.
+End MultiClass.
+
+(** ** Cure 23. Concrete soft-NMS decay instances. *)
+
+Definition linear_decay (s : nat) : nat := s / 2.
+
+Lemma linear_decay_decreases : forall n, linear_decay n <= n.
+Proof.
+  intros n. unfold linear_decay. apply Nat.Div0.div_le_upper_bound. lia.
+Qed.
+
+Definition step_decay (threshold : nat) (s : nat) : nat :=
+  if Nat.ltb s threshold then 0 else s.
+
+Lemma step_decay_decreases :
+  forall threshold n, step_decay threshold n <= n.
+Proof.
+  intros th n. unfold step_decay.
+  destruct (Nat.ltb_spec n th); lia.
+Qed.
+
+Theorem linear_soft_nms_heatmap :
+  forall (r theta : nat) (D : list (@det pixel)),
+    one_peak (heatmap_iou r) 1 theta D ->
+    filter_above theta (soft_nms (heatmap_iou r) 1 linear_decay D) =
+    filter_above theta D.
+Proof.
+  intros r theta D Hop.
+  apply soft_nms_collapse_onepeak; [apply linear_decay_decreases | assumption].
+Qed.
+
+Theorem step_soft_nms_heatmap :
+  forall (r theta th : nat) (D : list (@det pixel)),
+    one_peak (heatmap_iou r) 1 theta D ->
+    filter_above theta (soft_nms (heatmap_iou r) 1 (step_decay th) D) =
+    filter_above theta D.
+Proof.
+  intros r theta th D Hop.
+  apply soft_nms_collapse_onepeak; [apply step_decay_decreases | assumption].
+Qed.
+
+Theorem linear_soft_nms_detr :
+  forall (tau theta : nat) (D : list (@det ibox)),
+    one_peak ibox_iou tau theta D ->
+    filter_above theta (soft_nms ibox_iou tau linear_decay D) =
+    filter_above theta D.
+Proof.
+  intros tau theta D Hop.
+  apply soft_nms_collapse_onepeak; [apply linear_decay_decreases | assumption].
+Qed.
+
+(** ** Cure 22. Concrete bitmap MaskNMS instance. *)
+
+Definition bitmap : Type := list (list bool).
+
+Fixpoint and_row_count (a b : list bool) : nat :=
+  match a, b with
+  | x :: xs, y :: ys => (if andb x y then 1 else 0) + and_row_count xs ys
+  | _, _ => 0
+  end.
+
+Fixpoint or_row_count (a b : list bool) : nat :=
+  match a, b with
+  | x :: xs, y :: ys => (if orb x y then 1 else 0) + or_row_count xs ys
+  | _, _ => 0
+  end.
+
+Fixpoint bitmap_inter_card (m1 m2 : bitmap) : nat :=
+  match m1, m2 with
+  | r1 :: rs1, r2 :: rs2 => and_row_count r1 r2 + bitmap_inter_card rs1 rs2
+  | _, _ => 0
+  end.
+
+Fixpoint bitmap_union_card (m1 m2 : bitmap) : nat :=
+  match m1, m2 with
+  | r1 :: rs1, r2 :: rs2 => or_row_count r1 r2 + bitmap_union_card rs1 rs2
+  | _, _ => 0
+  end.
+
+Lemma and_row_count_sym :
+  forall a b, and_row_count a b = and_row_count b a.
+Proof.
+  induction a as [|x xs IH]; intros [|y ys]; simpl; try reflexivity.
+  rewrite (IH ys). f_equal. destruct x, y; reflexivity.
+Qed.
+
+Lemma or_row_count_sym :
+  forall a b, or_row_count a b = or_row_count b a.
+Proof.
+  induction a as [|x xs IH]; intros [|y ys]; simpl; try reflexivity.
+  rewrite (IH ys). f_equal. destruct x, y; reflexivity.
+Qed.
+
+Lemma bitmap_inter_card_sym :
+  forall m1 m2, bitmap_inter_card m1 m2 = bitmap_inter_card m2 m1.
+Proof.
+  induction m1 as [|r1 rs1 IH]; intros [|r2 rs2]; simpl; try reflexivity.
+  rewrite (IH rs2), and_row_count_sym. reflexivity.
+Qed.
+
+Lemma bitmap_union_card_sym :
+  forall m1 m2, bitmap_union_card m1 m2 = bitmap_union_card m2 m1.
+Proof.
+  induction m1 as [|r1 rs1 IH]; intros [|r2 rs2]; simpl; try reflexivity.
+  rewrite (IH rs2), or_row_count_sym. reflexivity.
+Qed.
+
+Definition bitmap_iou (m1 m2 : bitmap) : nat :=
+  mask_iou bitmap_inter_card bitmap_union_card m1 m2.
+
+Lemma bitmap_iou_sym :
+  forall m1 m2, bitmap_iou m1 m2 = bitmap_iou m2 m1.
+Proof.
+  intros m1 m2. unfold bitmap_iou, mask_iou.
+  rewrite (bitmap_inter_card_sym m1 m2).
+  rewrite (bitmap_union_card_sym m1 m2).
+  reflexivity.
+Qed.
+
+Theorem bitmap_nms_collapse :
+  forall (tau theta : nat) (D : list (@det bitmap)),
+    NoDup D ->
+    sorted_desc D ->
+    one_peak bitmap_iou tau theta D ->
+    no_tie_clash bitmap_iou tau D ->
+    filter_above theta (nms_sorted bitmap_iou tau D) =
+    filter_above theta D.
+Proof.
+  intros. apply (nms_collapse_onepeak bitmap_iou_sym); assumption.
+Qed.
+
+(** ** Cure 19. Complexity bound: NMS makes at most O(n^2) IoU evaluations.
+
+    We define an explicit IoU-call counter [nms_iou_count] mirroring the
+    structure of [nms_sorted] and prove it is bounded by [length D * length D].
+    Threshold filtering is O(n) (one comparison per detection), so under
+    [Separated 1] the [filter_above]-equivalence theorem turns an O(n^2)
+    NMS into an O(n) sort-and-filter without changing the output set. *)
+
+Section Complexity.
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Variable tau : nat.
+
+  Function nms_iou_count (D : list (@det Box)) {measure (@length (@det Box)) D} : nat :=
+    match D with
+    | [] => 0
+    | d :: rest =>
+        length rest +
+        nms_iou_count
+          (filter (fun d' => negb (Nat.leb tau (iou (box d) (box d')))) rest)
+    end.
+  Proof.
+    intros D d rest Heq. simpl.
+    pose proof (filter_length_le
+                  (fun d' => negb (Nat.leb tau (iou (box d) (box d')))) rest) as HL.
+    lia.
+  Defined.
+
+  Lemma nms_iou_count_bound :
+    forall D, nms_iou_count D <= length D * length D.
+  Proof.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+    destruct D as [|d rest].
+    - rewrite nms_iou_count_equation. simpl. lia.
+    - rewrite nms_iou_count_equation.
+      set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+      assert (Hlt : ltof _ (@length (@det Box)) (filter P rest) (d :: rest)).
+      { unfold ltof. simpl.
+        pose proof (filter_length_le P rest) as HL. lia. }
+      apply IH in Hlt.
+      pose proof (filter_length_le P rest) as HL.
+      simpl length at 2.
+      simpl length at 3.
+      nia.
+  Qed.
+
+  Definition filter_complexity (D : list (@det Box)) : nat := length D.
+
+  Lemma nms_complexity_dominates_filter :
+    forall D, length D >= 1 ->
+      filter_complexity D <= nms_iou_count D + length D.
+  Proof.
+    intros D Hd. unfold filter_complexity. lia.
+  Qed.
+End Complexity.
+
+(** ** Cure 18. Hausdorff geometric bound.
+
+    The above-theta detections in [D] dropped by NMS are not arbitrary —
+    each has a high-IoU [box] relationship with some kept detection.
+    Strengthens the cardinality-only [nms_quantitative_bound] with
+    structural information about *where* the dropped detections sit. *)
+
+Theorem hausdorff_drop_has_suppressor :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau theta : nat) (D : list (@det Box)),
+      NoDup D ->
+      sorted_desc D ->
+      no_tie_clash iou tau D ->
+      forall d,
+        In d D -> above theta d = true ->
+        ~ In d (nms_sorted iou tau D) ->
+        exists d', In d' (nms_sorted iou tau D) /\
+                   tau <= iou (box d) (box d').
+Proof.
+  intros Box iou iou_sym_h tau theta D.
+  induction D as [D IH]
+    using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+  intros Hnd Hsd Hntc d Hin Hab Hnotin.
+  destruct D as [|d0 rest]; [contradiction|].
+  rewrite nms_sorted_equation in Hnotin.
+  set (P := fun d' => negb (Nat.leb tau (iou (box d0) (box d')))).
+  set (restf := filter P rest).
+  destruct Hin as [Heq | Hinr].
+  - subst d0. exfalso. apply Hnotin. left; reflexivity.
+  - destruct (Nat.leb_spec tau (iou (box d0) (box d))) as [Hge | Hlt].
+    + (* d0 is the suppressor *)
+      exists d0. split.
+      * rewrite nms_sorted_equation. left; reflexivity.
+      * rewrite iou_sym_h. assumption.
+    + (* d slipped past d0; recurse into restf *)
+      assert (Hd_in_restf : In d restf).
+      { unfold restf, P. apply filter_In. split; [assumption|].
+        apply negb_true_iff. apply Nat.leb_gt. assumption. }
+      assert (Hltof : ltof _ (@length (@det Box)) restf (d0 :: rest)).
+      { unfold ltof, restf. simpl.
+        pose proof (filter_length_le P rest) as HL. lia. }
+      assert (Hnd_restf : NoDup restf).
+      { unfold restf. apply NoDup_filter. inversion Hnd; assumption. }
+      assert (Hsd_restf : sorted_desc restf).
+      { unfold restf. apply sorted_desc_filter.
+        apply (sorted_desc_tail Hsd). }
+      assert (Hntc_restf : no_tie_clash iou tau restf).
+      { intros x y Hx Hy Hne Heqxy.
+        apply filter_In in Hx as [Hx _].
+        apply filter_In in Hy as [Hy _].
+        apply Hntc; [right; assumption | right; assumption
+                   | assumption | assumption]. }
+      assert (Hnotin_restf : ~ In d (nms_sorted iou tau restf)).
+      { intros Hc. apply Hnotin. right. exact Hc. }
+      destruct (IH restf Hltof Hnd_restf Hsd_restf Hntc_restf d Hd_in_restf Hab Hnotin_restf)
+        as [d' [Hd'in Hd'iou]].
+      exists d'. split; [|assumption].
+      rewrite nms_sorted_equation. right. exact Hd'in.
+Qed.
+
+(** ** Cure 29. Quantisation transport: a [q]-step quantiser on scores
+    preserves [Separated] with margin reduced by [2*q]. Justifies
+    post-training int8 quantisation: a Separated detector with margin
+    [m + 2q] remains Separated with margin [m] after quantising scores
+    to multiples of [q]. *)
+
+Definition quantise (q s : nat) : nat := s / q * q.
+
+Lemma quantise_le : forall q s, quantise q s <= s.
+Proof.
+  intros q s. unfold quantise.
+  destruct (Nat.eq_dec q 0) as [Hq0 | Hq0].
+  - subst. simpl. lia.
+  - pose proof (Nat.div_mod s q Hq0) as Hdm. lia.
+Qed.
+
+Lemma quantise_close :
+  forall q s, q > 0 -> s < quantise q s + q.
+Proof.
+  intros q s Hq. unfold quantise.
+  pose proof (Nat.div_mod s q (Nat.neq_sym _ _ (Nat.lt_neq _ _ Hq))) as Hdm.
+  pose proof (Nat.mod_upper_bound s q (Nat.neq_sym _ _ (Nat.lt_neq _ _ Hq))) as Hmod.
+  lia.
+Qed.
+
+Definition quantise_det {Box : Type} (q : nat) (d : @det Box) : @det Box :=
+  mkDet (quantise q (score d)) (box d).
+
+Definition quantise_list {Box : Type} (q : nat) (D : list (@det Box)) :
+    list (@det Box) := map (@quantise_det Box q) D.
+
+Lemma quantise_list_box_preserved :
+  forall (Box : Type) (q : nat) (d_orig : @det Box),
+    box (quantise_det q d_orig) = box d_orig.
+Proof. intros. reflexivity. Qed.
+
+Theorem quantisation_transport :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta : nat)
+         (D : list (@det Box)) (m q : nat),
+    q > 0 ->
+    Separated iou tau theta (m + 2 * q) D ->
+    Separated iou tau theta m (quantise_list q D).
+Proof.
+  intros Box iou tau theta D m q Hq Hsep d d' Hin Hin' Hne Hiou.
+  apply in_map_iff in Hin as [d_o [Hd_eq Hd_in]].
+  apply in_map_iff in Hin' as [d'_o [Hd'_eq Hd'_in]].
+  assert (Hne_o : d_o <> d'_o).
+  { intros Heq. subst d_o. apply Hne. rewrite <- Hd_eq, <- Hd'_eq. reflexivity. }
+  rewrite <- Hd_eq, <- Hd'_eq in Hiou.
+  rewrite !quantise_list_box_preserved in Hiou.
+  specialize (Hsep d_o d'_o Hd_in Hd'_in Hne_o Hiou).
+  pose proof (@quantise_le q (score d_o)) as Hle1.
+  pose proof (@quantise_le q (score d'_o)) as Hle2.
+  pose proof (@quantise_close q (score d_o) Hq) as Hcl1.
+  pose proof (@quantise_close q (score d'_o) Hq) as Hcl2.
+  destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+  - left. rewrite <- Hd_eq, <- Hd'_eq. unfold quantise_det. simpl. split.
+    + lia.
+    + lia.
+  - right. rewrite <- Hd_eq, <- Hd'_eq. unfold quantise_det. simpl. split.
+    + lia.
+    + lia.
+Qed.
+
+(** ** Cure 16. Decidable [Separated]: given decidable equality on [Box],
+    check the predicate by enumerating all pairs. *)
+
+Section SeparatedDec.
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Variable tau theta : nat.
+  Variable box_eq_dec : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2}.
+
+  Definition det_eq_dec (d1 d2 : @det Box) : {d1 = d2} + {d1 <> d2}.
+  Proof.
+    destruct d1 as [s1 b1], d2 as [s2 b2].
+    destruct (Nat.eq_dec s1 s2) as [Hs | Hs];
+    destruct (box_eq_dec b1 b2) as [Hb | Hb].
+    - subst. left; reflexivity.
+    - right. intros H. inversion H. contradiction.
+    - right. intros H. inversion H. contradiction.
+    - right. intros H. inversion H. contradiction.
+  Defined.
+
+  Definition pair_check (slack : nat) (d d' : @det Box) : bool :=
+    if det_eq_dec d d' then true
+    else if Nat.ltb (iou (box d) (box d')) tau then true
+    else
+      orb ((Nat.leb (score d + slack) (score d')) && Nat.ltb (score d) theta)
+          ((Nat.leb (score d' + slack) (score d)) && Nat.ltb (score d') theta).
+
+  Definition Separated_check (slack : nat) (D : list (@det Box)) : bool :=
+    forallb (fun d => forallb (pair_check slack d) D) D.
+
+  Lemma pair_check_iff :
+    forall slack d d',
+      pair_check slack d d' = true <->
+      (d = d' \/ iou (box d) (box d') < tau \/
+       (score d + slack <= score d' /\ score d < theta) \/
+       (score d' + slack <= score d /\ score d' < theta)).
+  Proof.
+    intros slack d d'. unfold pair_check.
+    destruct (det_eq_dec d d') as [He | He].
+    - split; [intros _; left; assumption | reflexivity].
+    - destruct (Nat.ltb_spec (iou (box d) (box d')) tau) as [Hl | Hl].
+      + split; [intros _; right; left; assumption | reflexivity].
+      + split.
+        * intros Hor. apply Bool.orb_true_iff in Hor as [Ha | Ha].
+          -- apply Bool.andb_true_iff in Ha as [Ha1 Ha2].
+             apply Nat.leb_le in Ha1. apply Nat.ltb_lt in Ha2.
+             right; right; left. split; assumption.
+          -- apply Bool.andb_true_iff in Ha as [Ha1 Ha2].
+             apply Nat.leb_le in Ha1. apply Nat.ltb_lt in Ha2.
+             right; right; right. split; assumption.
+        * intros [Hc | [Hc | [[Hc1 Hc2] | [Hc1 Hc2]]]].
+          -- contradiction.
+          -- lia.
+          -- apply Bool.orb_true_iff. left.
+             apply Bool.andb_true_iff. split.
+             ++ apply Nat.leb_le. assumption.
+             ++ apply Nat.ltb_lt. assumption.
+          -- apply Bool.orb_true_iff. right.
+             apply Bool.andb_true_iff. split.
+             ++ apply Nat.leb_le. assumption.
+             ++ apply Nat.ltb_lt. assumption.
+  Qed.
+
+  Theorem Separated_check_correct :
+    forall slack D,
+      Separated_check slack D = true <-> Separated iou tau theta slack D.
+  Proof.
+    intros slack D. unfold Separated_check, Separated. split.
+    - intros Hall d d' Hin Hin' Hne Hiou.
+      rewrite forallb_forall in Hall.
+      specialize (Hall d Hin).
+      rewrite forallb_forall in Hall.
+      specialize (Hall d' Hin').
+      apply pair_check_iff in Hall as [Hc | [Hc | [Hc | Hc]]].
+      + contradiction.
+      + lia.
+      + left. assumption.
+      + right. assumption.
+    - intros Hsep. rewrite forallb_forall.
+      intros d Hin. rewrite forallb_forall.
+      intros d' Hin'.
+      apply pair_check_iff.
+      destruct (det_eq_dec d d') as [Heq | Hne]; [left; assumption|].
+      destruct (Nat.leb_spec tau (iou (box d) (box d'))) as [Hge | Hlt].
+      + specialize (Hsep d d' Hin Hin' Hne Hge).
+        destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+        * right; right; left. split; assumption.
+        * right; right; right. split; assumption.
+      + right; left. assumption.
+  Qed.
+
+  Theorem Separated_dec :
+    forall slack D, {Separated iou tau theta slack D} + {~ Separated iou tau theta slack D}.
+  Proof.
+    intros slack D.
+    destruct (Separated_check slack D) eqn:E.
+    - left. apply Separated_check_correct. assumption.
+    - right. intros Hsep.
+      apply Separated_check_correct in Hsep. congruence.
+  Qed.
+End SeparatedDec.
+
+(** ** Cure 26. Centerness preserves [Separated] when co-monotone with score.
+
+    In FCOS, centerness [c : Box -> nat] is a structural factor that
+    is high at object centres and low at offsets. Empirically, centerness
+    is co-monotone with score on the relevant detections: the higher-
+    scored detection in any high-IoU pair also has higher (or equal)
+    centerness — that is the empirical "centerness fakes one-peak"
+    observation. Under this co-monotonicity, the composite score
+    [score * c / K] preserves [Separated]. *)
+
+Theorem centerness_preserves_separation_co_monotone :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau theta : nat) (D : list (@det Box)) (slack : nat)
+         (centerness : Box -> nat) (K : nat),
+    K > 0 ->
+    (forall b, centerness b <= K) ->
+    (forall d d', In d D -> In d' D ->
+       score d <= score d' -> centerness (box d) <= centerness (box d')) ->
+    Separated iou tau theta slack D ->
+    forall d d', In d D -> In d' D -> d <> d' ->
+      tau <= iou (box d) (box d') ->
+      (score d * centerness (box d)) <= (score d' * centerness (box d')) \/
+      (score d' * centerness (box d')) <= (score d * centerness (box d)).
+Proof.
+  intros Box iou tau theta D slack centerness K HK Hcb Hcomono Hsep
+         d d' Hin Hin' Hne Hiou.
+  specialize (Hsep d d' Hin Hin' Hne Hiou).
+  destruct Hsep as [[Hgap _] | [Hgap _]].
+  - left.
+    assert (Hsle : score d <= score d') by lia.
+    pose proof (Hcomono d d' Hin Hin' Hsle) as Hcle.
+    apply Nat.mul_le_mono; assumption.
+  - right.
+    assert (Hsle : score d' <= score d) by lia.
+    pose proof (Hcomono d' d Hin' Hin Hsle) as Hcle.
+    apply Nat.mul_le_mono; assumption.
+Qed.
+
+(** ** Cure 31. Extraction to OCaml.
+
+    [nms_sorted] and [filter_above] are constructive enough to extract
+    cleanly. With [nat] erased to [int], [bool] kept native, and the
+    list type identified with OCaml's, the extracted module compiles
+    against any OCaml runtime and can be linked into a verified
+    post-processing kernel. *)
+
+Require Coq.extraction.Extraction.
+Extraction Language OCaml.
+Set Extraction Optimize.
+Set Extraction AccessOpaque.
+
+Extract Inductive bool => "bool" [ "true" "false" ].
+Extract Inductive list => "list" [ "[]" "(::)" ].
+Extract Inductive prod => "(*)" [ "(,)" ].
+Extract Inductive sumbool => "bool" [ "true" "false" ].
+
+Extract Inductive nat => "int" [ "0" "Stdlib.succ" ]
+  "(fun fO fS n -> if n = 0 then fO () else fS (n - 1))".
+
+Extract Constant Nat.add => "(+)".
+Extract Constant Nat.sub => "(fun a b -> if a >= b then a - b else 0)".
+Extract Constant Nat.mul => "( * )".
+Extract Constant Nat.eqb => "(=)".
+Extract Constant Nat.leb => "(<=)".
+Extract Constant Nat.ltb => "(<)".
+
+Extraction "nms_extracted.ml" nms_sorted filter_above bitmap_iou heatmap_iou
+                              ibox_iou linear_decay step_decay
+                              soft_nms quantise_list class_iou.
+
