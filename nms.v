@@ -1845,6 +1845,44 @@ Section MaskNMS.
     reflexivity.
   Qed.
 
+  (** ** Truncation bound for [mask_iou].
+
+      The integer encoding [mask_iou = (i * 100) / u] is the floor of
+      the exact rational [i * 100 / u]; the rounding gap is at most one
+      unit. A real-valued IoU bound from training translates to an
+      [nat] one-peak hypothesis with one extra unit of margin. *)
+
+  Lemma mask_iou_truncation_bound :
+    forall m1 m2,
+      mask_union_card m1 m2 <> 0 ->
+      mask_iou m1 m2 * mask_union_card m1 m2
+        <= mask_inter_card m1 m2 * 100
+      < (mask_iou m1 m2 + 1) * mask_union_card m1 m2.
+  Proof.
+    intros m1 m2 Hu. unfold mask_iou.
+    apply Nat.eqb_neq in Hu as Heq. rewrite Heq.
+    apply Nat.eqb_neq in Heq.
+    set (i := mask_inter_card m1 m2).
+    set (u := mask_union_card m1 m2).
+    pose proof (Nat.div_mod (i * 100) u Hu) as Hdm.
+    pose proof (Nat.mod_upper_bound (i * 100) u Hu) as Hmod.
+    split; lia.
+  Qed.
+
+  Lemma mask_iou_lt_tau_iff :
+    forall m1 m2 tau,
+      mask_union_card m1 m2 <> 0 ->
+      mask_iou m1 m2 < tau ->
+      mask_inter_card m1 m2 * 100 < tau * mask_union_card m1 m2.
+  Proof.
+    intros m1 m2 tau Hu Hlt.
+    pose proof (@mask_iou_truncation_bound m1 m2 Hu) as [_ Hb].
+    set (u := mask_union_card m1 m2) in *.
+    set (i := mask_inter_card m1 m2) in *.
+    apply Nat.lt_le_trans with ((mask_iou m1 m2 + 1) * u); [assumption|].
+    apply Nat.mul_le_mono_r. lia.
+  Qed.
+
   Theorem mask_nms_collapse :
     forall (tau theta : nat) (D : list (@det Mask)),
       NoDup D ->
@@ -1974,6 +2012,28 @@ Qed.
 
 Definition ibox_iou_struct : IoUStructure ibox :=
   @mkIoU ibox ibox_iou 100 ibox_iou_sym ibox_iou_le_100.
+
+(** ** Truncation bound for [ibox_iou].
+
+    [ibox_iou] is the floor of the exact rational [(inter * 100) / union];
+    the rounding gap is at most one unit, identical to [mask_iou]. *)
+
+Lemma ibox_iou_truncation_bound :
+  forall a b,
+    ibox_area a + ibox_area b - ibox_inter_area a b <> 0 ->
+    let inter := ibox_inter_area a b in
+    let union := ibox_area a + ibox_area b - inter in
+    ibox_iou a b * union <= inter * 100 < (ibox_iou a b + 1) * union.
+Proof.
+  intros a b Hu. unfold ibox_iou.
+  apply Nat.eqb_neq in Hu as Heq. rewrite Heq.
+  apply Nat.eqb_neq in Heq.
+  set (inter := ibox_inter_area a b).
+  set (union := ibox_area a + ibox_area b - inter).
+  pose proof (Nat.div_mod (inter * 100) union Hu) as Hdm.
+  pose proof (Nat.mod_upper_bound (inter * 100) union Hu) as Hmod.
+  split; lia.
+Qed.
 
 Theorem detr_collapse :
   forall (tau theta : nat) (D : list (@det ibox)),
