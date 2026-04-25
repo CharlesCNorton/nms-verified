@@ -1714,6 +1714,46 @@ Proof.
   - inversion Hiou.
 Qed.
 
+(** ** Sortedness is necessary, not just a proof convenience.
+
+    The list [D := mkDet 30 0 :: mkDet 100 1] is unsorted by score but
+    satisfies one_peak and no_tie_clash (the only above-threshold pair
+    has the right structure). Yet [filter_above 50 (nms_sorted D)] is
+    empty (NMS keeps the lower-scored head and suppresses the
+    higher-scored tail), while [filter_above 50 D] is the high-scored
+    detection. The collapse equality fails. *)
+
+Definition cex_unsorted : list (@det nat) := [mkDet 30 0; mkDet 100 1].
+
+Example sortedness_necessary :
+  NoDup cex_unsorted /\
+  ~ sorted_desc cex_unsorted /\
+  one_peak triv_iou 50 50 cex_unsorted /\
+  no_tie_clash triv_iou 50 cex_unsorted /\
+  filter_above 50 (nms_sorted triv_iou 50 cex_unsorted) <>
+  filter_above 50 cex_unsorted.
+Proof.
+  unfold cex_unsorted. split; [|split; [|split; [|split]]].
+  - apply NoDup_cons.
+    + simpl. intros [H | H]; [inversion H; lia | contradiction].
+    + apply NoDup_cons; [simpl; intros H; contradiction | apply NoDup_nil].
+  - simpl. intros [Hbnd _].
+    specialize (Hbnd (mkDet 100 1) (or_introl eq_refl)).
+    cbn [score] in Hbnd. lia.
+  - intros d d' Hin Hin' Hiou Hlt.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | Hf]];
+    destruct Hin' as [Heq' | [Heq' | Hf']];
+    try contradiction; subst; cbn [score] in *; try lia.
+  - intros d d' Hin Hin' Hne Heq.
+    simpl in Hin, Hin'.
+    destruct Hin as [H | [H | Hf]];
+    destruct Hin' as [H' | [H' | Hf']];
+    try contradiction; subst; cbn [score] in *;
+    try (exfalso; apply Hne; reflexivity); try lia.
+  - vm_compute. discriminate.
+Qed.
+
 (** ** Counterexample to the converse of [nms_collapse_onepeak]: equality
     of [filter_above (nms_sorted D)] and [filter_above D] does not imply
     [Separated 1 D]. The empty-filter case (no detections above [theta])
