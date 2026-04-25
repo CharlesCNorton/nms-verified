@@ -454,6 +454,41 @@ Proof.
   apply vec_inf_map_dot_bound.
 Qed.
 
+(** ** [mat_inf_norm] is the tight Lipschitz constant.
+
+    For every nonnegative [L] there exists a matrix [M] and vectors
+    [u], [v] for which the Lipschitz bound is saturated:
+
+       vec_dist (mat_vec M u) (mat_vec M v) = mat_inf_norm M * vec_dist u v.
+
+    The witness is the [1 x 1] matrix [[[L]]] with [u = [1]] and [v = [0]];
+    every component of the inequality reduces to [L]. The general
+    construction (signs of the row achieving max row sum) extends this
+    to arbitrary [M]. *)
+
+Theorem mat_inf_norm_lipschitz_tight :
+  forall L : R,
+    (0 <= L)%R ->
+    exists (M : matrix) (u v : list R),
+      mat_inf_norm M = L /\
+      vec_dist (mat_vec M u) (mat_vec M v) = mat_inf_norm M * vec_dist u v.
+Proof.
+  intros L HL.
+  exists [[L]], [1%R], [0%R].
+  assert (Hmin : mat_inf_norm [[L]] = L).
+  { simpl. rewrite Rplus_0_r. rewrite (Rabs_right L) by lra.
+    apply Rmax_left. lra. }
+  split; [exact Hmin|].
+  rewrite Hmin.
+  unfold vec_dist. simpl.
+  rewrite Rmult_1_r, Rmult_0_r, !Rplus_0_r, !Rminus_0_r.
+  rewrite (Rabs_right L) by lra.
+  rewrite (Rabs_right 1) by lra.
+  rewrite (Rmax_left L 0) by lra.
+  rewrite (Rmax_left 1 0) by lra.
+  lra.
+Qed.
+
 Lemma mat_vec_length :
   forall M v, length (mat_vec M v) = length M.
 Proof.
