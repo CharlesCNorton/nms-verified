@@ -1041,6 +1041,34 @@ Section Collapse.
       [assumption | apply separated_implies_one_peak; assumption].
   Qed.
 
+  (** ** Quantitative behaviour of soft-NMS on individual scores.
+
+      Above-threshold detections have their scores preserved exactly:
+      under one-peak no above-threshold detection has a higher-scored
+      overlapper, so the decay function is never applied to it. Below-
+      threshold detections can be decayed (and the score never increases). *)
+
+  Theorem soft_nms_score_above_unchanged :
+    forall D d decay,
+      In d D -> one_peak D -> above d = true ->
+      score (apply_decay decay D d) = score d.
+  Proof.
+    intros D d decay Hin Hop Hab.
+    rewrite (@apply_decay_keeps_above D d decay Hin Hop Hab). reflexivity.
+  Qed.
+
+  Theorem soft_nms_score_below_decayed :
+    forall D d decay,
+      (forall n, decay n <= n) ->
+      score (apply_decay decay D d) <= score d.
+  Proof.
+    intros D d decay Hdec.
+    unfold apply_decay.
+    destruct (has_higher_overlapper D d).
+    - cbn [score]. apply Hdec.
+    - apply Nat.le_refl.
+  Qed.
+
   (** ** Robustness: NMS only drops one-peak violators. *)
 
   Definition above_violator (D : list det) (d : det) : Prop :=
