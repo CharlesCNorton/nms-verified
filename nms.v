@@ -3348,11 +3348,7 @@ Proof.
   exact Hperm_filter.
 Qed.
 
-(** ******************************************************************** *)
-(** *                        Audacious cures                              *)
-(** ******************************************************************** *)
-
-(** ** Cure 25: NMS idempotence.
+(** ** NMS idempotence.
 
     [nms_sorted iou tau (nms_sorted iou tau D) = nms_sorted iou tau D].
     NMS is a projection: applying it twice equals applying it once.
@@ -3438,7 +3434,7 @@ Proof.
   - intros d d'. apply (@nms_sorted_sound Box iou iou_sym_h tau D).
 Qed.
 
-(** ** Cure 24: Reflexivity-at-max for [mask_iou] under nondegeneracy.
+(** ** Reflexivity-at-max for [mask_iou] under nondegeneracy.
 
     Analogous to [ibox_iou_refl_max]. A mask whose intersection with itself
     equals its size and whose self-union equals its size satisfies
@@ -3487,7 +3483,7 @@ Proof.
   apply mask_iou_refl_max; [assumption | apply bitmap_inter_self_eq_union].
 Qed.
 
-(** ** Cure 1: Concrete Part I → Part II weld.
+(** ** Concrete Part I → Part II weld.
 
     A closed-term [Separated] certificate produced by feeding a concrete
     Lipschitz score head through [lipschitz_bridge_substantive]. The score
@@ -3544,7 +3540,7 @@ Proof.
       try (exfalso; apply Hne; reflexivity); cbn; lia.
 Qed.
 
-(** ** Cure 9: nms_sorted equivalence with imperative greedy_nms.
+(** ** nms_sorted equivalence with imperative greedy_nms.
 
     The functional [nms_sorted] and the imperative [greedy_nms] (kept-list
     accumulator, sort by score, iterate, keep iff no kept overlapper)
@@ -3564,7 +3560,7 @@ Proof.
     + apply IH. right. assumption.
 Qed.
 
-(** ** Cure 21: Characterize NoDup-free collapse.
+(** ** NoDup-free length bound.
 
     Without [NoDup D], the input list may contain syntactically duplicate
     detections. Each duplicate strictly weakens the collapse: the LHS
@@ -3594,7 +3590,7 @@ Proof.
     simpl. lia.
 Qed.
 
-(** ** Cure 22: Canonical-sort equality replaces Permutation.
+(** ** sort_desc commutes with filter.
 
     Under [sort_desc] as a canonical sorted form, NMS-collapse becomes
     a definitional equality on the canonical sorts (rather than a
@@ -3612,7 +3608,7 @@ Proof.
   - apply sort_desc_perm.
 Qed.
 
-(** ** Cure 12: Operator-norm tightness for an arbitrary matrix.
+(** ** Operator-norm tightness for an arbitrary matrix.
 
     For every nonnegative L there is a matrix realising [mat_inf_norm M = L]
     with the Lipschitz bound saturated; the trivial [1×1] witness suffices.
@@ -3628,7 +3624,7 @@ Theorem mat_inf_norm_witness_for_each_L :
       (vec_dist (mat_vec M u) (mat_vec M v) = mat_inf_norm M * vec_dist u v)%R.
 Proof. exact mat_inf_norm_lipschitz_tight. Qed.
 
-(** ** Cure 5: Centerness co-monotonicity derived from architecture.
+(** ** Centerness co-monotonicity derived from architecture.
 
     FCOS factorises detection score as [base_score * centerness] where the
     base score is computed from features that — for anchors overlapping at
@@ -3687,7 +3683,7 @@ Section CenternessFromArchitecture.
 
 End CenternessFromArchitecture.
 
-(** ** Cure 20: Tightness of the truncation bound.
+(** ** Tightness of the truncation bound.
 
     The floor-rounding gap in [mask_iou] is achieved with equality by a
     pair of bitmaps for which [(inter * 100) mod union > 0]. The
@@ -3740,7 +3736,7 @@ Theorem c20_truncation_gap_one :
     - bitmap_iou c20_m1 c20_m2 * bitmap_union_card c20_m1 c20_m2 = 1.
 Proof. reflexivity. Qed.
 
-(** ** Cure 16: Heatmap collapse for arbitrary distance metrics.
+(** ** Heatmap collapse for arbitrary distance metrics.
 
     The heatmap-IoU framework parameterised over an abstract pseudometric.
     Specialises to [pdist] (Chebyshev) and admits Manhattan, Euclidean
@@ -3808,7 +3804,7 @@ Proof.
   intros. apply (nbr_local_nms_collapse manhattan_dist_sym); assumption.
 Qed.
 
-(** ** Cure 9: nms_sorted and greedy_nms agree as subsets of the input.
+(** ** nms_sorted and greedy_nms agree as subsets of the input.
 
     Both [nms_sorted] (functional, well-founded recursion on filtered rest)
     and [greedy_nms] (imperative-style, kept-list accumulator) preserve
@@ -3828,7 +3824,7 @@ Lemma greedy_nms_in_subset :
     In x (greedy_nms iou tau D) -> In x D.
 Proof. intros Box iou tau D x. apply greedy_nms_subset. Qed.
 
-(** ** Cure 4: query_diversity from architectural disjoint-boxes.
+(** ** query_diversity from architectural disjoint-boxes.
 
     Promotes [query_diversity] from definitional alias to a derivable
     consequence. DETR's training objective enforces, via bipartite
@@ -3863,7 +3859,7 @@ Proof.
   exfalso. specialize (Hdisj d d' Hin Hin' Hne). lia.
 Qed.
 
-(** ** Cure 10: Threshold-uniform quantitative bound.
+(** ** Threshold-uniform quantitative bound.
 
     A single bound holding uniformly over all thresholds [theta]:
     for any threshold, [|filter_above theta D| <= |filter_above theta
@@ -3897,7 +3893,7 @@ Proof.
   simpl in H. exact H.
 Qed.
 
-(** ** Cure 15: Combined four-way quantization transport.
+(** ** Combined score-axis quantization transport.
 
     Score quantization via [quantise_list] is the score-axis version.
     For score + box quantization (where box quantization is encoded as a
@@ -3933,7 +3929,7 @@ Proof.
   apply combined_score_quantisation_transport; assumption.
 Qed.
 
-(** ** Cure 19: Bridge with computed slack.
+(** ** Bridge with computed slack.
 
     Restates [lipschitz_bridge_substantive] so the resulting slack is
     a function of the inputs [m], [L], [eps], with the bound on
@@ -3966,7 +3962,7 @@ Proof.
            Feat h dist true_feat obs_feat L m eps D); assumption.
 Qed.
 
-(** ** Cure 7: Generic collapse over IoUStructure.
+(** ** Generic collapse over IoUStructure.
 
     Proved once at the [IoUStructure] level. The heatmap, mask, ibox, and
     bitmap instantiations are corollaries with the IoU function and
@@ -4008,7 +4004,7 @@ Proof.
   intros tau theta D. apply (@iou_struct_collapse ibox ibox_iou_struct tau theta D).
 Qed.
 
-(** ** Cure 14: Per-class detection thresholds.
+(** ** Per-class detection thresholds.
 
     Generalises [filter_above] to take a per-class threshold function
     [Class -> nat]. The collapse theorem holds class-wise: for each
@@ -4057,7 +4053,7 @@ Section PerClassThreshold.
 
 End PerClassThreshold.
 
-(** ** Cure 11: Realistic ibox tightness — overlapping rectangles.
+(** ** Geometric ibox tightness — overlapping rectangles.
 
     A two-element ibox family with computed [ibox_iou] above the
     threshold, demonstrating the quantitative bound saturates on a
@@ -4076,7 +4072,7 @@ Definition c11_box1 : ibox := exist _ c11_box1_raw c11_box1_wf.
 Definition c11_box2 : ibox := exist _ c11_box2_raw c11_box2_wf.
 
 (** The two boxes overlap with [ibox_iou] = [(90*100)*100 / (10000+9000+1000)]
-    = 9000*100 / 19000 — substantial overlap. Concrete saturation is
+    = 9000*100 / 19000. Concrete saturation is
     by [vm_compute] on the resulting numerics. *)
 
 Theorem c11_geometric_ibox_overlaps :
@@ -4087,7 +4083,7 @@ Theorem c11_geometric_ibox_iou_positive :
   90 <= ibox_iou c11_box1 c11_box2.
 Proof. vm_compute. lia. Qed.
 
-(** ** Cure 8: Hausdorff distance bound for heatmap-NMS dropouts.
+(** ** Hausdorff distance bound for heatmap-NMS dropouts.
 
     For [heatmap_iou r] with [tau >= 1], any above-theta detection
     dropped by NMS has its pixel within distance [r] of some kept
@@ -4111,7 +4107,7 @@ Proof.
   inversion Hiou.
 Qed.
 
-(** ** Cure 23: Concrete bridge instance for bitmap masks.
+(** ** Concrete bridge instance for bitmap masks.
 
     The substantive bridge instantiated at [Box := bitmap], [iou :=
     bitmap_iou]. Builds a closed-term Separated certificate for a list
@@ -4151,7 +4147,7 @@ Proof.
       try (exfalso; apply Hne; reflexivity); cbn; lia.
 Qed.
 
-(** ** Cure 17: Typed multilayer chain over [Matrix r c].
+(** ** Typed multilayer chain over [Matrix r c].
 
     [Matrix r c] is a sigma type pinning row count and column width.
     Composing two layers requires the intermediate dimension to match
@@ -4177,7 +4173,7 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ** Cure 2: Sequential soft-NMS — every above-theta survives unchanged.
+(** ** Sequential soft-NMS structural subset.
 
     Combining [apply_seq_decay_no_overlapper] (already in the file) with
     induction on the recursion: every above-theta detection emerges from
