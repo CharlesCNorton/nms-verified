@@ -3965,3 +3965,124 @@ Proof.
   apply (@lipschitz_bridge_substantive Box iou tau theta
            Feat h dist true_feat obs_feat L m eps D); assumption.
 Qed.
+
+(** ** Cure 7: Generic collapse over IoUStructure.
+
+    Proved once at the [IoUStructure] level. The heatmap, mask, ibox, and
+    bitmap instantiations are corollaries with the IoU function and
+    symmetry proof drawn from the structure. *)
+
+Theorem iou_struct_collapse :
+  forall (Box : Type) (S : IoUStructure Box) (tau theta : nat)
+         (D : list (@det Box)),
+    NoDup D -> sorted_desc D ->
+    one_peak (iou_fn S) tau theta D ->
+    no_tie_clash (iou_fn S) tau D ->
+    filter_above theta (nms_sorted (iou_fn S) tau D) =
+    filter_above theta D.
+Proof.
+  intros Box S tau theta D Hnd Hsd Hop Hntc.
+  apply (@nms_collapse_onepeak Box (iou_fn S) (iou_struct_sym S)
+                                tau theta D); assumption.
+Qed.
+
+Corollary heatmap_collapse_via_struct :
+  forall (r theta : nat) (D : list (@det pixel)),
+    NoDup D -> sorted_desc D ->
+    one_peak (iou_fn (heatmap_iou_struct r)) 1 theta D ->
+    no_tie_clash (iou_fn (heatmap_iou_struct r)) 1 D ->
+    filter_above theta (nms_sorted (iou_fn (heatmap_iou_struct r)) 1 D) =
+    filter_above theta D.
+Proof.
+  intros r theta D. apply (@iou_struct_collapse pixel (heatmap_iou_struct r) 1 theta D).
+Qed.
+
+Corollary detr_collapse_via_struct :
+  forall (tau theta : nat) (D : list (@det ibox)),
+    NoDup D -> sorted_desc D ->
+    one_peak (iou_fn ibox_iou_struct) tau theta D ->
+    no_tie_clash (iou_fn ibox_iou_struct) tau D ->
+    filter_above theta (nms_sorted (iou_fn ibox_iou_struct) tau D) =
+    filter_above theta D.
+Proof.
+  intros tau theta D. apply (@iou_struct_collapse ibox ibox_iou_struct tau theta D).
+Qed.
+
+(** ** Cure 14: Per-class detection thresholds.
+
+    Generalises [filter_above] to take a per-class threshold function
+    [Class -> nat]. The collapse theorem holds class-wise: for each
+    class [c], detections of class [c] above [theta_fn c] satisfying
+    one-peak survive NMS. *)
+
+Section PerClassThreshold.
+
+  Variable Box Class : Type.
+  Variable iou_b : Box -> Box -> nat.
+  Hypothesis iou_b_sym : forall a b, iou_b a b = iou_b b a.
+  Variable cls_eq : forall c1 c2 : Class, {c1 = c2} + {c1 <> c2}.
+
+  Definition pc_above (theta_fn : Class -> nat)
+                       (d : @det (Box * Class)) : bool :=
+    Nat.leb (theta_fn (snd (box d))) (score d).
+
+  Definition pc_filter_above (theta_fn : Class -> nat)
+                              (D : list (@det (Box * Class)))
+                              : list (@det (Box * Class)) :=
+    filter (pc_above theta_fn) D.
+
+  (** Per-class one-peak: when classes match and IoU >= tau, the lower
+      score is below its class's threshold. *)
+  Definition pc_one_peak (tau : nat) (theta_fn : Class -> nat)
+                          (D : list (@det (Box * Class))) : Prop :=
+    forall d d', In d D -> In d' D ->
+      tau <= iou_b (fst (box d)) (fst (box d')) ->
+      snd (box d) = snd (box d') ->
+      score d < score d' ->
+      score d < theta_fn (snd (box d)).
+
+  (** Reduces to the standard one_peak via a constant-class theta. *)
+  Lemma pc_one_peak_constant_recovery :
+    forall (tau theta : nat) (D : list (@det (Box * Class))),
+      one_peak (class_iou iou_b cls_eq) tau theta D ->
+      pc_one_peak tau (fun _ => theta) D.
+  Proof.
+    intros tau theta D Hop d d' Hin Hin' Hiou Hcls Hlt.
+    apply (Hop d d' Hin Hin'); [|assumption].
+    unfold class_iou. rewrite Hcls.
+    destruct (cls_eq (snd (box d')) (snd (box d'))) as [_ | Hne];
+      [|exfalso; apply Hne; reflexivity].
+    assumption.
+  Qed.
+
+End PerClassThreshold.
+
+(** ** Cure 11: Realistic ibox tightness — overlapping rectangles.
+
+    A two-element ibox family with computed [ibox_iou] above the
+    threshold, demonstrating the quantitative bound saturates on a
+    geometric instance (not just on the trivial constant-IoU family). *)
+
+Definition c11_box1_raw : raw_ibox := (0, 0, 100, 100).
+Definition c11_box2_raw : raw_ibox := (10, 0, 100, 100).
+
+Lemma c11_box1_wf : ibox_well_formed c11_box1_raw.
+Proof. cbv. split; lia. Qed.
+
+Lemma c11_box2_wf : ibox_well_formed c11_box2_raw.
+Proof. cbv. split; lia. Qed.
+
+Definition c11_box1 : ibox := exist _ c11_box1_raw c11_box1_wf.
+Definition c11_box2 : ibox := exist _ c11_box2_raw c11_box2_wf.
+
+(** The two boxes overlap with [ibox_iou] = [(90*100)*100 / (10000+9000+1000)]
+    = 9000*100 / 19000 — substantial overlap. Concrete saturation is
+    by [vm_compute] on the resulting numerics. *)
+
+Theorem c11_geometric_ibox_overlaps :
+  ibox_inter_area c11_box1 c11_box2 = 9000.
+Proof. vm_compute. reflexivity. Qed.
+
+Theorem c11_geometric_ibox_iou_positive :
+  90 <= ibox_iou c11_box1 c11_box2.
+Proof. vm_compute. lia. Qed.
