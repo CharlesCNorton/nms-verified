@@ -1363,8 +1363,7 @@ Proof.
   unfold filter_above in *. simpl. f_equal. apply IH.
 Qed.
 
-(** ** Structural properties hold parametrically; the bound saturation is
-    verified computationally at multiple sizes. *)
+(** ** Structural properties of the parametric tightness family. *)
 
 Theorem tightness_structural :
   forall n,
@@ -1378,26 +1377,147 @@ Proof.
   - apply build_tight_no_tie_clash.
 Qed.
 
-Theorem tightness_saturated_3 :
+(** ** Compute [has_higher_overlapper] on [build_tight].
+
+    Under [triv_iou] and [tau = 50], the overlapper test reduces to
+    the score comparison [score d < score d']: any pair of detections
+    overlaps with IoU 100, so the only condition left is the strict
+    score gap. Therefore an element of [build_tight n] has a higher
+    overlapper iff its score is strictly less than [n]. *)
+
+Lemma has_higher_overlapper_build_tight :
+  forall n d, In d (build_tight n) ->
+    has_higher_overlapper triv_iou 50 (build_tight n) d = Nat.ltb (score d) n.
+Proof.
+  intros n d Hin.
+  unfold has_higher_overlapper.
+  destruct (Nat.ltb_spec (score d) n) as [Hlt | Hge].
+  - apply existsb_exists. exists (mkDet n (n - 1)).
+    split.
+    + destruct n as [|k]; [lia|]. simpl. left. f_equal. lia.
+    + apply Bool.andb_true_iff. split.
+      * apply Nat.ltb_lt. simpl. assumption.
+      * apply Nat.leb_le. unfold triv_iou. lia.
+  - apply Bool.not_true_is_false.
+    intros Hex.
+    apply existsb_exists in Hex as [d' [Hin' Hcond]].
+    apply Bool.andb_true_iff in Hcond as [Hlt _].
+    apply Nat.ltb_lt in Hlt.
+    apply build_tight_in in Hin' as [Hsd' _]. lia.
+Qed.
+
+Lemma filter_above_higher_overlap_id :
+  forall (D L : list (@det nat)),
+    (forall d, In d D -> 1 <= score d) ->
+    (forall d, In d D -> exists d', In d' L /\ score d < score d') ->
+    filter (fun d => above 1 d &&
+                       has_higher_overlapper triv_iou 50 L d) D = D.
+Proof.
+  intros D L Habove Hhigher.
+  induction D as [|d rest IH]; [reflexivity|].
+  cbn [filter].
+  assert (Hhead : (above 1 d &&
+                   has_higher_overlapper triv_iou 50 L d) = true).
+  { apply Bool.andb_true_iff. split.
+    - unfold above. apply Nat.leb_le. apply Habove. left; reflexivity.
+    - unfold has_higher_overlapper. apply existsb_exists.
+      destruct (Hhigher d (or_introl eq_refl)) as [d' [Hin' Hlt]].
+      exists d'. split; [assumption|].
+      apply Bool.andb_true_iff. split.
+      + apply Nat.ltb_lt. assumption.
+      + apply Nat.leb_le. unfold triv_iou. lia. }
+  rewrite Hhead. f_equal. apply IH.
+  - intros d' Hd'. apply Habove. right; assumption.
+  - intros d' Hd'. apply Hhigher. right; assumption.
+Qed.
+
+Lemma build_tight_subset :
+  forall j k, j <= k ->
+    forall d, In d (build_tight j) -> In d (build_tight k).
+Proof.
+  intros j k Hjk d Hin.
+  apply build_tight_in in Hin as [Hs [Hb Heq]].
+  destruct d as [sd bd]. simpl in *.
+  assert (Hbd_lt_k : bd < k) by lia.
+  clear -Heq Hbd_lt_k.
+  induction k as [|m IH]; [lia|].
+  cbn [build_tight].
+  destruct (Nat.eq_dec bd m) as [Hbm | Hne_bm].
+  - left. subst bd. replace sd with (S m) by lia. reflexivity.
+  - right. apply IH. lia.
+Qed.
+
+Lemma filter_cons_false :
+  forall A (f : A -> bool) (a : A) (l : list A),
+    f a = false -> filter f (a :: l) = filter f l.
+Proof. intros A f a l Hf. simpl. rewrite Hf. reflexivity. Qed.
+
+Lemma violator_above_build_tight :
+  forall n,
+    violator_above triv_iou 50 1 (build_tight n) = build_tight (n - 1).
+Proof.
+  destruct n as [|k]; [reflexivity|].
+  simpl Nat.sub. rewrite Nat.sub_0_r.
+  unfold violator_above.
+  replace (build_tight (S k)) with (mkDet (S k) k :: build_tight k) at 1
+    by reflexivity.
+  rewrite filter_cons_false.
+  - apply filter_above_higher_overlap_id.
+    + intros d Hd. apply build_tight_in in Hd as [Hs _]. lia.
+    + intros d Hd.
+      exists (mkDet (S k) k). split.
+      * cbn [build_tight]. left. reflexivity.
+      * apply build_tight_in in Hd as [Hs [Hb _]]. simpl. lia.
+  - apply Bool.andb_false_iff. right.
+    rewrite (has_higher_overlapper_build_tight (S k) (mkDet (S k) k))
+      by (cbn [build_tight]; left; reflexivity).
+    cbn [score]. apply Nat.ltb_irrefl.
+Qed.
+
+Lemma violation_count_build_tight :
+  forall n, violation_count triv_iou 50 1 (build_tight n) = n - 1.
+Proof.
+  intros n. unfold violation_count.
+  rewrite violator_above_build_tight. apply build_tight_length.
+Qed.
+
+Theorem tightness_parametric :
+  forall n,
+    length (filter_above 1 (build_tight n))
+    = length (filter_above 1 (nms_sorted triv_iou 50 (build_tight n)))
+      + violation_count triv_iou 50 1 (build_tight n).
+Proof.
+  intros n.
+  rewrite filter_above_1_build_tight.
+  rewrite build_tight_length.
+  rewrite nms_sorted_build_tight.
+  rewrite violation_count_build_tight.
+  destruct n as [|k]; [reflexivity|].
+  unfold filter_above. cbn [filter]. unfold above. cbn [score].
+  assert (Hlt : Nat.leb 1 (S k) = true) by (apply Nat.leb_le; lia).
+  rewrite Hlt. simpl. lia.
+Qed.
+
+Corollary tightness_saturated_3 :
   let D := build_tight 3 in
   length (filter_above 1 D)
     = length (filter_above 1 (nms_sorted triv_iou 50 D))
       + violation_count triv_iou 50 1 D.
-Proof. vm_compute. reflexivity. Qed.
+Proof. apply tightness_parametric. Qed.
 
-Theorem tightness_saturated_5 :
+Corollary tightness_saturated_5 :
   let D := build_tight 5 in
   length (filter_above 1 D)
     = length (filter_above 1 (nms_sorted triv_iou 50 D))
       + violation_count triv_iou 50 1 D.
-Proof. vm_compute. reflexivity. Qed.
+Proof. apply tightness_parametric. Qed.
 
-Theorem tightness_saturated_10 :
+Corollary tightness_saturated_10 :
   let D := build_tight 10 in
   length (filter_above 1 D)
     = length (filter_above 1 (nms_sorted triv_iou 50 D))
       + violation_count triv_iou 50 1 D.
-Proof. vm_compute. reflexivity. Qed.
+Proof. apply tightness_parametric. Qed.
 
 (** ** Monotone score transformations preserve one-peak. *)
 
