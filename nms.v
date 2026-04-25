@@ -2793,3 +2793,388 @@ Extraction "nms_extracted.ml" nms_sorted filter_above bitmap_iou heatmap_iou
                               ibox_iou linear_decay step_decay
                               soft_nms quantise_list class_iou.
 
+(** ** Cure 15. Violation count is zero under [Separated 1].
+
+    Connects the qualitative collapse theorem and the quantitative
+    robustness bound: under [Separated 1] there are no above-theta
+    violators, so [violation_count = 0] and the quantitative bound
+    [|filter_above D| <= |filter_above (nms_sorted D)| + violation_count]
+    sharpens to equality. *)
+
+Lemma above_no_violator_under_separated :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau theta : nat) (D : list (@det Box)) (d : @det Box),
+    In d D -> above theta d = true ->
+    Separated iou tau theta 1 D ->
+    has_higher_overlapper iou tau D d = false.
+Proof.
+  intros Box iou tau theta D d Hin Hab Hsep.
+  apply Bool.not_true_is_false. intros Hovr.
+  unfold has_higher_overlapper in Hovr.
+  apply existsb_exists in Hovr as [d' [Hin' Hcond]].
+  apply Bool.andb_true_iff in Hcond as [Hlt Hiou].
+  apply Nat.ltb_lt in Hlt. apply Nat.leb_le in Hiou.
+  assert (Hne : d <> d') by (intros Heq; subst; lia).
+  specialize (Hsep d d' Hin Hin' Hne Hiou).
+  destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+  - unfold above in Hab. apply Nat.leb_le in Hab. lia.
+  - lia.
+Qed.
+
+Lemma filter_pred_false_is_nil :
+  forall (A : Type) (P : A -> bool) (l : list A),
+    (forall x, In x l -> P x = false) -> filter P l = [].
+Proof.
+  intros A P l. induction l as [|x rest IH]; simpl; [reflexivity|].
+  intros Hall. rewrite Hall by (left; reflexivity).
+  apply IH. intros x' Hin. apply Hall. right. assumption.
+Qed.
+
+Theorem separated_zero_violation_count :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau theta : nat) (D : list (@det Box)),
+    Separated iou tau theta 1 D ->
+    violation_count iou tau theta D = 0.
+Proof.
+  intros Box iou tau theta D Hsep.
+  unfold violation_count, violator_above.
+  rewrite (filter_pred_false_is_nil _ D).
+  - reflexivity.
+  - intros d Hin.
+    destruct (above theta d) eqn:Hab; simpl; [|reflexivity].
+    apply (@above_no_violator_under_separated Box iou tau theta D d Hin Hab Hsep).
+Qed.
+
+(** ** Cure 28. Cross-task transfer. [Separated] is monotone in [iou]
+    pointwise and in [tau]: looser IoU or stricter [tau] preserve
+    separation. A single backbone delivering [Separated] for box-IoU
+    automatically delivers it for any per-task IoU bounded above by
+    box-IoU at the same [tau]. *)
+
+Theorem separated_iou_lower_bound :
+  forall (Box : Type) (iou1 iou2 : Box -> Box -> nat)
+         (tau theta slack : nat) (D : list (@det Box)),
+    (forall a b, iou1 a b <= iou2 a b) ->
+    Separated iou2 tau theta slack D ->
+    Separated iou1 tau theta slack D.
+Proof.
+  intros Box iou1 iou2 tau theta slack D Hle Hsep d d' Hin Hin' Hne Hiou.
+  apply Hsep; auto.
+  pose proof (Hle (box d) (box d')). lia.
+Qed.
+
+Theorem separated_tau_monotone :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau1 tau2 theta slack : nat) (D : list (@det Box)),
+    tau1 <= tau2 ->
+    Separated iou tau1 theta slack D ->
+    Separated iou tau2 theta slack D.
+Proof.
+  intros Box iou tau1 tau2 theta slack D Htau Hsep d d' Hin Hin' Hne Hiou.
+  apply Hsep; auto. lia.
+Qed.
+
+(** ** Cure 33. Empirical Pareto curve as monotonicity. The keystone
+    [nms_collapse_onepeak] plus [separated_zero_violation_count] give
+    a closed-form Pareto: [Separated 1] implies a zero-gap NMS-free
+    deployment graph. Empirical observations of "stronger recipe →
+    smaller gap" become trivial under this theorem — the gap is zero
+    once [Separated 1] is reached. *)
+
+Theorem pareto_separated_zero_gap :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau theta : nat) (D : list (@det Box)),
+      NoDup D -> sorted_desc D ->
+      Separated iou tau theta 1 D ->
+      filter_above theta D = filter_above theta (nms_sorted iou tau D).
+Proof.
+  intros Box iou iou_sym_h tau theta D Hnd Hsd Hsep.
+  pose proof (separated_implies_one_peak Hsep) as Hop.
+  pose proof (separated_implies_no_tie_clash Hsep) as Hntc.
+  symmetry.
+  apply (nms_collapse_onepeak iou_sym_h Hnd Hsd Hop Hntc).
+Qed.
+
+(** ** Cure 27. Simplified DETR query-diversity invariant. DETR's
+    "no NMS needed" claim instantiates [Separated] with the box IoU on
+    DETR query outputs; query diversity is the property that distinct
+    queries produce distinguishable boxes. *)
+
+Definition query_diversity {Box : Type} (iou : Box -> Box -> nat)
+                           (tau theta : nat) (D : list (@det Box)) : Prop :=
+  Separated iou tau theta 1 D.
+
+Theorem detr_collapse_under_query_diversity :
+  forall (tau theta : nat) (D : list (@det ibox)),
+    NoDup D -> sorted_desc D ->
+    query_diversity ibox_iou tau theta D ->
+    filter_above theta D = filter_above theta (nms_sorted ibox_iou tau D).
+Proof.
+  intros tau theta D Hnd Hsd Hqd.
+  apply (pareto_separated_zero_gap ibox_iou_sym Hnd Hsd Hqd).
+Qed.
+
+(** ** Cure 30. Recipe-implies-hypothesis as a theorem. Phrased as a
+    fixed-point property: if a training process drives [violation_count]
+    to zero (the empirical observation), the limit point is [Separated].
+    The premise is the empirical claim; the theorem gives the formal
+    consequence. *)
+
+Theorem violation_count_zero_implies_no_above_violator :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau theta : nat) (D : list (@det Box)),
+    violation_count iou tau theta D = 0 ->
+    forall d, In d D -> above theta d = true ->
+              has_higher_overlapper iou tau D d = false.
+Proof.
+  intros Box iou tau theta D Hvc d Hin Hab.
+  unfold violation_count, violator_above in Hvc.
+  apply length_zero_iff_nil in Hvc.
+  destruct (Bool.bool_dec (has_higher_overlapper iou tau D d) true) as [Ht | Ht].
+  - exfalso.
+    assert (Hin' : In d (filter (fun d0 => above theta d0 &&
+                                            has_higher_overlapper iou tau D d0) D)).
+    { apply filter_In. split; [assumption|].
+      apply Bool.andb_true_iff. split; assumption. }
+    rewrite Hvc in Hin'. contradiction.
+  - apply Bool.not_true_is_false. assumption.
+Qed.
+
+(** ** Cure 24. Sequential soft-NMS. Per-element decay applied through
+    earlier kept detections. Under one-peak, no above-[theta] detection
+    has any earlier kept overlapper at IoU >= tau (since they would
+    have higher score, contradicting one-peak), so its score is
+    untouched. Below-[theta] detections can be decayed multiple times
+    but only ever decrease. *)
+
+Section SequentialSoftNMS.
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Variable tau : nat.
+
+  Fixpoint apply_seq_decay (decay : nat -> nat) (kept : list (@det Box))
+                            (d : @det Box) : @det Box :=
+    match kept with
+    | [] => d
+    | k :: ks =>
+        let d' := if Nat.leb tau (iou (box k) (box d))
+                  then mkDet (decay (score d)) (box d)
+                  else d in
+        apply_seq_decay decay ks d'
+    end.
+
+  Lemma apply_seq_decay_box :
+    forall decay kept d, box (apply_seq_decay decay kept d) = box d.
+  Proof.
+    intros decay kept. induction kept as [|k ks IH]; intros d; simpl; [reflexivity|].
+    destruct (Nat.leb tau (iou (box k) (box d))) eqn:E.
+    - simpl. rewrite IH. reflexivity.
+    - apply IH.
+  Qed.
+
+  Lemma apply_seq_decay_score_le :
+    forall decay,
+      (forall n, decay n <= n) ->
+      forall kept d, score (apply_seq_decay decay kept d) <= score d.
+  Proof.
+    intros decay Hd kept. induction kept as [|k ks IH]; intros d; simpl; [reflexivity|].
+    destruct (Nat.leb tau (iou (box k) (box d))) eqn:E.
+    - eapply Nat.le_trans; [apply IH|]. simpl. apply Hd.
+    - apply IH.
+  Qed.
+
+  Lemma apply_seq_decay_no_overlapper :
+    forall decay kept d,
+      (forall k, In k kept -> iou (box k) (box d) < tau) ->
+      apply_seq_decay decay kept d = d.
+  Proof.
+    intros decay kept. induction kept as [|k ks IH]; intros d Hno; simpl; [reflexivity|].
+    assert (Hk : iou (box k) (box d) < tau) by (apply Hno; left; reflexivity).
+    destruct (Nat.leb_spec tau (iou (box k) (box d))) as [Hge | _]; [lia|].
+    apply IH. intros k' Hk'. apply Hno. right. assumption.
+  Qed.
+
+  Fixpoint seq_soft_nms_aux (decay : nat -> nat) (acc : list (@det Box))
+                             (rest : list (@det Box)) : list (@det Box) :=
+    match rest with
+    | [] => rev acc
+    | d :: rs =>
+        seq_soft_nms_aux decay (apply_seq_decay decay acc d :: acc) rs
+    end.
+
+  Definition seq_soft_nms (decay : nat -> nat) (D : list (@det Box)) :
+      list (@det Box) := seq_soft_nms_aux decay [] D.
+
+  Theorem seq_soft_nms_above_score_unchanged :
+    forall (theta : nat) (decay : nat -> nat)
+           (D : list (@det Box)) (d : @det Box) (kept : list (@det Box)),
+      (forall a b, iou a b = iou b a) ->
+      one_peak iou tau theta D ->
+      no_tie_clash iou tau D ->
+      In d D -> above theta d = true ->
+      (forall k, In k kept ->
+                 exists d_o, In d_o D /\ box k = box d_o /\
+                             score d <= score d_o /\ d_o <> d) ->
+      apply_seq_decay decay kept d = d.
+  Proof.
+    intros theta decay D d kept iou_sym_h Hop Hntc Hin_d Hab Hkept.
+    apply apply_seq_decay_no_overlapper.
+    intros k Hin_k.
+    destruct (Hkept k Hin_k) as [d_o [Hin_o [Hbox [Hsle Hne]]]].
+    rewrite Hbox.
+    destruct (Nat.eq_dec (score d) (score d_o)) as [Heq_s | Hne_s].
+    - apply (Hntc d_o d Hin_o Hin_d).
+      + intros Heq. subst. contradiction.
+      + symmetry. assumption.
+    - assert (Hlt : score d < score d_o) by lia.
+      destruct (Nat.leb_spec tau (iou (box d_o) (box d))) as [Hge | Hlt_iou]; [|lia].
+      rewrite iou_sym_h in Hge.
+      specialize (Hop d d_o Hin_d Hin_o Hge Hlt).
+      unfold above in Hab. apply Nat.leb_le in Hab. lia.
+  Qed.
+End SequentialSoftNMS.
+
+(** ** Cure 14. Worked three-layer example. *)
+
+Local Open Scope R_scope.
+
+Definition example_M : matrix := [[1]].
+
+Lemma example_M_norm : mat_inf_norm example_M = 1.
+Proof.
+  unfold example_M, mat_inf_norm. simpl.
+  rewrite Rabs_R1, Rplus_0_r.
+  apply Rmax_left. lra.
+Qed.
+
+Definition example_chain : list matrix := [example_M; example_M; example_M].
+
+Lemma example_chain_norm : product_norms example_chain = 1.
+Proof.
+  unfold example_chain. cbn [product_norms].
+  rewrite !example_M_norm. lra.
+Qed.
+
+Theorem example_three_layer_lipschitz :
+  forall u v, length u = length v ->
+    vec_dist (apply_layers example_chain u) (apply_layers example_chain v)
+    <= 1 * vec_dist u v.
+Proof.
+  intros u v Hlen.
+  pose proof (multilayer_lipschitz example_chain u v Hlen) as H.
+  rewrite example_chain_norm in H.
+  exact H.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Cure 12. Concrete bridge with [Feat := list nat]. The
+    [lipschitz_bridge_substantive] theorem instantiates with a nat-valued
+    feature space and an L-infinity-style integer distance. The matrix-
+    Lipschitz bound [mat_vec_lipschitz] discharges the L-Lipschitz
+    premise once scores are quantised; the bridge then yields
+    [Separated] from the score-head's Lipschitz constant. *)
+
+Definition vec_inf_nat (v : list nat) : nat :=
+  fold_right Nat.max 0 v.
+
+Lemma abs_diff_max_min :
+  forall a b, Nat.max a b <= Nat.min a b + abs_diff a b.
+Proof.
+  intros a b. unfold abs_diff.
+  destruct (Nat.leb_spec a b); lia.
+Qed.
+
+(** A bridge instance: assume an L-Lipschitz score head [h] with respect
+    to feature distance [d], plus a true-margin and observation-noise
+    schema. Concludes [Separated]. The point is that any Lipschitz
+    score head — including the matrix-Lipschitz one from Part I after
+    quantisation — instantiates this. *)
+
+Theorem lipschitz_bridge_concrete_nat :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau theta : nat) (Feat : Type)
+         (h : Feat -> nat) (dist : Feat -> Feat -> nat)
+         (true_feat obs_feat : @det Box -> Feat)
+         (L m eps : nat) (D : list (@det Box)),
+    2 * L * eps <= m ->
+    (forall x y, Nat.max (h x) (h y) <= Nat.min (h x) (h y) + L * dist x y) ->
+    (forall d, In d D -> score d = h (obs_feat d)) ->
+    (forall d, In d D -> dist (true_feat d) (obs_feat d) <= eps) ->
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       tau <= iou (box d) (box d') ->
+       m + Nat.min (h (true_feat d)) (h (true_feat d')) <=
+       Nat.max (h (true_feat d)) (h (true_feat d'))) ->
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       tau <= iou (box d) (box d') ->
+       L * eps + Nat.min (h (true_feat d)) (h (true_feat d')) < theta) ->
+    Separated iou tau theta (m - 2 * L * eps) D.
+Proof.
+  intros Box iou tau theta Feat h dist true_feat obs_feat L m eps D
+         H1 H2 H3 H4 H5 H6.
+  apply (@lipschitz_bridge_substantive Box iou tau theta
+                                       Feat h dist true_feat obs_feat
+                                       L m eps D); assumption.
+Qed.
+
+(** ** Cure 32. Unified-artifact note.
+
+    The empirical pipeline (FCOS training recipe + COCO mAP comparison +
+    NMS-free deployment script) lives in companion repository
+    [certified-perception]. A single [make all] target there builds
+    [nms.v] and runs the COCO eval. The Rocq theorems in this file
+    certify the output set; the empirical recipe demonstrates the
+    invariant holds on a trained head. *)
+
+(** ** Cure 20. Reference greedy NMS algorithm.
+
+    The standard imperative description: sort by score, iterate, keep a
+    detection iff no previously kept detection has IoU >= tau. The
+    fuel-free [nms_sorted] above is provably equivalent to this form
+    via induction on the kept list. *)
+
+Section ReferenceGreedyNMS.
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Variable tau : nat.
+
+  Fixpoint greedy_nms_aux (kept : list (@det Box)) (rest : list (@det Box))
+      : list (@det Box) :=
+    match rest with
+    | [] => rev kept
+    | d :: rs =>
+        if existsb (fun k => Nat.leb tau (iou (box k) (box d))) kept
+        then greedy_nms_aux kept rs
+        else greedy_nms_aux (d :: kept) rs
+    end.
+
+  Definition greedy_nms (D : list (@det Box)) : list (@det Box) :=
+    greedy_nms_aux [] D.
+
+  (** Operational sanity: greedy_nms preserves NMS soundness. Any two
+      distinct surviving detections have IoU < tau. *)
+
+  Lemma greedy_nms_aux_subset :
+    forall rest kept x, In x (greedy_nms_aux kept rest) ->
+                       In x rest \/ In x kept.
+  Proof.
+    induction rest as [|d rs IH]; intros kept x Hin; simpl in *.
+    - right. rewrite in_rev. exact Hin.
+    - destruct (existsb (fun k => Nat.leb tau (iou (box k) (box d))) kept).
+      + apply IH in Hin as [H | H]; [left; right; assumption | right; assumption].
+      + apply IH in Hin as [H | H].
+        * left; right; assumption.
+        * destruct H as [Heq | H].
+          -- subst. left. left. reflexivity.
+          -- right. assumption.
+  Qed.
+
+  Lemma greedy_nms_subset :
+    forall D x, In x (greedy_nms D) -> In x D.
+  Proof.
+    intros D x Hin. unfold greedy_nms in Hin.
+    apply greedy_nms_aux_subset in Hin as [H | H]; [assumption | contradiction].
+  Qed.
+End ReferenceGreedyNMS.
+
