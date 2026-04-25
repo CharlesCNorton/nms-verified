@@ -550,6 +550,34 @@ Section Collapse.
         (forall d', In d' rest -> score d' <= score d) /\ sorted_desc rest
     end.
 
+  (** ** Separated: every distinct high-IoU pair has score gap at least
+      [slack] and the lower score below [theta]. This is the primary
+      separation predicate; [one_peak] and [no_tie_clash] are convenient
+      factorisations of [Separated 1] used in some intermediate proofs. *)
+
+  Definition Separated (slack : nat) (D : list det) : Prop :=
+    forall d d', In d D -> In d' D ->
+      d <> d' ->
+      tau <= iou (box d) (box d') ->
+      (score d + slack <= score d' /\ score d < theta) \/
+      (score d' + slack <= score d /\ score d' < theta).
+
+  Lemma Separated_mono :
+    forall slack' slack D,
+      slack' <= slack -> Separated slack D -> Separated slack' D.
+  Proof.
+    intros slack' slack D Hle Hsep d d' Hin Hin' Hne Hiou.
+    specialize (Hsep d d' Hin Hin' Hne Hiou).
+    destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+    - left. split; [lia | assumption].
+    - right. split; [lia | assumption].
+  Qed.
+
+  (** ** [one_peak] and [no_tie_clash] are derivable from [Separated 1].
+      Conversely, [one_peak] and [no_tie_clash] together imply [Separated 1].
+      The keystone collapse theorem is proven once over [Separated 1] and
+      lifted to either form via these implications. *)
+
   Definition one_peak (D : list det) : Prop :=
     forall d d', In d D -> In d' D ->
       tau <= iou (box d) (box d') ->
@@ -561,16 +589,6 @@ Section Collapse.
       d <> d' ->
       score d = score d' ->
       iou (box d) (box d') < tau.
-
-  (** ** Separated: every distinct high-IoU pair has score gap at least
-      [slack] and the lower score below [theta]. *)
-
-  Definition Separated (slack : nat) (D : list det) : Prop :=
-    forall d d', In d D -> In d' D ->
-      d <> d' ->
-      tau <= iou (box d) (box d') ->
-      (score d + slack <= score d' /\ score d < theta) \/
-      (score d' + slack <= score d /\ score d' < theta).
 
   (** ** Bridge: Lipschitz score head ⇒ Separated.
 
@@ -689,6 +707,31 @@ Section Collapse.
       specialize (Hsep d d' Hin Hin' Hne Hge).
       destruct Hsep as [[Hgap _] | [Hgap _]]; lia.
     - assumption.
+  Qed.
+
+  Lemma op_ntc_implies_separated_1 :
+    forall D, one_peak D -> no_tie_clash D -> Separated 1 D.
+  Proof.
+    intros D Hop Hntc d d' Hin Hin' Hne Hiou.
+    destruct (Nat.lt_trichotomy (score d) (score d')) as [Hlt | [Heq | Hgt]].
+    - left. specialize (Hop d d' Hin Hin' Hiou Hlt).
+      split; [lia | assumption].
+    - exfalso. specialize (Hntc d d' Hin Hin' Hne Heq). lia.
+    - right.
+      assert (Hop' : score d' < theta).
+      { apply (Hop d' d Hin' Hin); [|assumption].
+        rewrite iou_sym. assumption. }
+      split; [lia | assumption].
+  Qed.
+
+  Theorem Separated_1_iff_op_ntc :
+    forall D, Separated 1 D <-> (one_peak D /\ no_tie_clash D).
+  Proof.
+    intros D. split.
+    - intros Hsep. split.
+      + apply separated_implies_one_peak; assumption.
+      + apply separated_implies_no_tie_clash; assumption.
+    - intros [Hop Hntc]. apply op_ntc_implies_separated_1; assumption.
   Qed.
 
   Lemma sorted_desc_tail :
