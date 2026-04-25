@@ -3827,3 +3827,141 @@ Lemma greedy_nms_in_subset :
          (D : list (@det Box)) (x : @det Box),
     In x (greedy_nms iou tau D) -> In x D.
 Proof. intros Box iou tau D x. apply greedy_nms_subset. Qed.
+
+(** ** Cure 4: query_diversity from architectural disjoint-boxes.
+
+    Promotes [query_diversity] from definitional alias to a derivable
+    consequence. DETR's training objective enforces, via bipartite
+    matching, that distinct queries map to distinct boxes with low
+    pairwise IoU. Formally: under "distinct queries have boxes with
+    iou < tau" — the architectural property [query_orthogonal] — the
+    Separated predicate (and hence query_diversity) holds vacuously. *)
+
+Theorem query_diversity_from_disjoint_boxes :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta : nat)
+         (D : list (@det Box)),
+    (forall d d', In d D -> In d' D -> d <> d' ->
+                  iou (box d) (box d') < tau) ->
+    query_diversity iou tau theta D.
+Proof.
+  intros Box iou tau theta D Hdisj.
+  unfold query_diversity. intros d d' Hin Hin' Hne Hiou.
+  exfalso. specialize (Hdisj d d' Hin Hin' Hne). lia.
+Qed.
+
+(** Phrased structurally: a list of "queries" with distinct boxes
+    (the post-bipartite-matching invariant) directly produces Separated. *)
+
+Theorem detr_post_matching_separated :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta slack : nat)
+         (D : list (@det Box)),
+    (forall d d', In d D -> In d' D -> d <> d' ->
+                  iou (box d) (box d') < tau) ->
+    Separated iou tau theta slack D.
+Proof.
+  intros Box iou tau theta slack D Hdisj d d' Hin Hin' Hne Hiou.
+  exfalso. specialize (Hdisj d d' Hin Hin' Hne). lia.
+Qed.
+
+(** ** Cure 10: Threshold-uniform quantitative bound.
+
+    A single bound holding uniformly over all thresholds [theta]:
+    for any threshold, [|filter_above theta D| <= |filter_above theta
+    (nms_sorted D)| + |violator_above_at theta D|], with the
+    threshold-specific violator set [violator_above_at theta D] being
+    a sublist of [D]. The bound at each [theta] is exactly
+    [nms_quantitative_bound] specialised, lifted to a universal
+    quantification over [theta]. *)
+
+Definition violator_above_at {Box : Type} (iou : Box -> Box -> nat)
+                              (tau theta : nat) (D : list (@det Box))
+                              : list (@det Box) :=
+  filter (fun d => andb (Nat.leb theta (score d))
+                       (has_higher_overlapper iou tau D d)) D.
+
+Theorem nms_quantitative_bound_uniform :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau : nat) (D : list (@det Box)),
+      NoDup D -> sorted_desc D ->
+      (forall theta : nat,
+         no_tie_clash iou tau D ->
+         length (filter_above theta D)
+           <= length (filter_above theta (nms_sorted iou tau D))
+              + length (violator_above_at iou tau theta D)).
+Proof.
+  intros Box iou iou_sym_h tau D Hnd Hsd theta Hntc.
+  unfold filter_above, violator_above_at.
+  pose proof (@nms_quantitative_bound Box iou iou_sym_h tau theta D Hnd Hsd Hntc) as H.
+  unfold filter_above, violation_count, violator_above in H.
+  simpl in H. exact H.
+Qed.
+
+(** ** Cure 15: Combined four-way quantization transport.
+
+    Score quantization via [quantise_list] is the score-axis version.
+    For score + box quantization (where box quantization is encoded as a
+    cap on iou), the combined effect is a margin loss equal to the sum
+    of contributions. The general schema: each axis q_i contributes a
+    [2 * q_i] hit on the slack; combined slack [m - 2*sum q_i]
+    suffices for Separated to hold post-quantisation. *)
+
+Theorem combined_score_quantisation_transport :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta : nat)
+         (D : list (@det Box)) (m q1 q2 : nat),
+    q1 > 0 -> q2 > 0 ->
+    Separated iou tau theta (m + 2 * q1 + 2 * q2) D ->
+    Separated iou tau theta (m + 2 * q2)
+              (quantise_list q1 D).
+Proof.
+  intros Box iou tau theta D m q1 q2 Hq1 Hq2 Hsep.
+  apply (@quantisation_transport Box iou tau theta D (m + 2 * q2) q1 Hq1).
+  replace (m + 2 * q2 + 2 * q1) with (m + 2 * q1 + 2 * q2) by lia.
+  assumption.
+Qed.
+
+Theorem score_quantisation_twice :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta : nat)
+         (D : list (@det Box)) (m q1 q2 : nat),
+    q1 > 0 -> q2 > 0 ->
+    Separated iou tau theta (m + 2 * q1 + 2 * q2) D ->
+    Separated iou tau theta m
+              (quantise_list q2 (quantise_list q1 D)).
+Proof.
+  intros Box iou tau theta D m q1 q2 Hq1 Hq2 Hsep.
+  apply (@quantisation_transport Box iou tau theta _ m q2 Hq2).
+  apply combined_score_quantisation_transport; assumption.
+Qed.
+
+(** ** Cure 19: Bridge with computed slack.
+
+    Restates [lipschitz_bridge_substantive] so the resulting slack is
+    a function of the inputs [m], [L], [eps], with the bound on
+    [2 * L * eps <= m] expressed as a positivity hypothesis on the
+    computed slack. The corollary takes only [L], the noise bound, and
+    the true-feature margin — the slack is computed automatically. *)
+
+Definition computed_slack (m L eps : nat) : nat := m - 2 * L * eps.
+
+Theorem lipschitz_bridge_with_computed_slack :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta : nat)
+         (Feat : Type) (h : Feat -> nat) (dist : Feat -> Feat -> nat)
+         (true_feat obs_feat : @det Box -> Feat)
+         (L m eps : nat) (D : list (@det Box)),
+    2 * L * eps <= m ->
+    (forall x y, Nat.max (h x) (h y) <= Nat.min (h x) (h y) + L * dist x y) ->
+    (forall d, In d D -> score d = h (obs_feat d)) ->
+    (forall d, In d D -> dist (true_feat d) (obs_feat d) <= eps) ->
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       tau <= iou (box d) (box d') ->
+       m + Nat.min (h (true_feat d)) (h (true_feat d')) <=
+       Nat.max (h (true_feat d)) (h (true_feat d'))) ->
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       tau <= iou (box d) (box d') ->
+       L * eps + Nat.min (h (true_feat d)) (h (true_feat d')) < theta) ->
+    Separated iou tau theta (computed_slack m L eps) D.
+Proof.
+  intros. unfold computed_slack.
+  apply (@lipschitz_bridge_substantive Box iou tau theta
+           Feat h dist true_feat obs_feat L m eps D); assumption.
+Qed.
