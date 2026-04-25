@@ -1421,6 +1421,26 @@ End MonotoneTransform.
 (** *                  Part III. Domain instantiations                    *)
 (** ******************************************************************** *)
 
+(** ** IoU axiomatisation.
+
+    An [IoUStructure Box] is an IoU function on [Box] together with its
+    maximum value [iou_max], a symmetry proof, and a bound on the range.
+    Each domain instance carries its own [iou_max] (heatmap returns
+    {0,1}; mask and ibox return {0..100}), giving the [tau] threshold
+    a unit semantics within the structure. *)
+
+Record IoUStructure (Box : Type) := mkIoU {
+  iou_fn : Box -> Box -> nat;
+  iou_max : nat;
+  iou_struct_sym : forall a b, iou_fn a b = iou_fn b a;
+  iou_struct_bounded : forall a b, iou_fn a b <= iou_max
+}.
+
+Arguments iou_fn {Box} _ _ _.
+Arguments iou_max {Box} _.
+Arguments iou_struct_sym {Box} _ _ _.
+Arguments iou_struct_bounded {Box} _ _ _.
+
 (** ** Heatmap local-NMS (keypoint detection). *)
 
 Definition pixel : Type := (nat * nat)%type.
@@ -1459,6 +1479,15 @@ Proof.
   intros r p q. unfold heatmap_iou.
   rewrite pdist_sym. reflexivity.
 Qed.
+
+Lemma heatmap_iou_le_1 : forall r p q, heatmap_iou r p q <= 1.
+Proof.
+  intros r p q. unfold heatmap_iou.
+  destruct (Nat.leb (pdist p q) r); lia.
+Qed.
+
+Definition heatmap_iou_struct (r : nat) : IoUStructure pixel :=
+  @mkIoU pixel (heatmap_iou r) 1 (heatmap_iou_sym r) (heatmap_iou_le_1 r).
 
 Theorem heatmap_local_nms_collapse :
   forall (r theta : nat) (D : list (@det pixel)),
@@ -1637,6 +1666,54 @@ Proof.
   replace (ibox_area a + ibox_area b) with (ibox_area b + ibox_area a) by lia.
   reflexivity.
 Qed.
+
+Lemma ibox_inter_le_area_left :
+  forall a b, ibox_inter_area a b <= ibox_area a.
+Proof.
+  intros a b.
+  pose proof (ibox_x1_le_x2 a) as Hax.
+  pose proof (ibox_y1_le_y2 a) as Hay.
+  unfold ibox_inter_area, ibox_area.
+  set (mx := Nat.max (ibox_x1 a) (ibox_x1 b)).
+  set (my := Nat.max (ibox_y1 a) (ibox_y1 b)).
+  set (Mx := Nat.min (ibox_x2 a) (ibox_x2 b)).
+  set (My := Nat.min (ibox_y2 a) (ibox_y2 b)).
+  assert (Hxm : ibox_x1 a <= mx) by (unfold mx; apply Nat.le_max_l).
+  assert (HxM : Mx <= ibox_x2 a) by (unfold Mx; apply Nat.le_min_l).
+  assert (Hym : ibox_y1 a <= my) by (unfold my; apply Nat.le_max_l).
+  assert (HyM : My <= ibox_y2 a) by (unfold My; apply Nat.le_min_l).
+  destruct (Nat.leb mx Mx) eqn:Ex; destruct (Nat.leb my My) eqn:Ey.
+  - apply Nat.leb_le in Ex. apply Nat.leb_le in Ey.
+    apply Nat.mul_le_mono; lia.
+  - rewrite Nat.mul_0_r. apply Nat.le_0_l.
+  - rewrite Nat.mul_0_l. apply Nat.le_0_l.
+  - rewrite Nat.mul_0_r. apply Nat.le_0_l.
+Qed.
+
+Lemma ibox_inter_le_area_right :
+  forall a b, ibox_inter_area a b <= ibox_area b.
+Proof.
+  intros a b. rewrite ibox_inter_area_sym. apply ibox_inter_le_area_left.
+Qed.
+
+Lemma ibox_iou_le_100 : forall a b, ibox_iou a b <= 100.
+Proof.
+  intros a b. unfold ibox_iou.
+  destruct (Nat.eqb (ibox_area a + ibox_area b - ibox_inter_area a b) 0) eqn:Eu.
+  - lia.
+  - apply Nat.eqb_neq in Eu.
+    pose proof (ibox_inter_le_area_left a b) as Hl.
+    pose proof (ibox_inter_le_area_right a b) as Hr.
+    set (inter := ibox_inter_area a b).
+    set (u := ibox_area a + ibox_area b - inter).
+    assert (Hinter_le_u : inter <= u) by (unfold u; lia).
+    assert (Hu_pos : 0 < u) by lia.
+    apply Nat.Div0.div_le_upper_bound.
+    apply Nat.mul_le_mono_r. assumption.
+Qed.
+
+Definition ibox_iou_struct : IoUStructure ibox :=
+  @mkIoU ibox ibox_iou 100 ibox_iou_sym ibox_iou_le_100.
 
 Theorem detr_collapse :
   forall (tau theta : nat) (D : list (@det ibox)),
