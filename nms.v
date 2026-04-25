@@ -1570,14 +1570,36 @@ Section MaskNMS.
 
 End MaskNMS.
 
-(** ** DETR post-hoc filtering (integer-coordinate boxes). *)
+(** ** DETR post-hoc filtering (integer-coordinate boxes).
 
-Definition ibox : Type := (nat * nat * nat * nat)%type.
+    Boxes carry a structural well-formedness proof (x1 <= x2 /\ y1 <= y2)
+    via a sigma type. This eliminates the silent zero in [ibox_inter_area]
+    that previously equated "degenerate box" with "empty intersection"
+    when [nat]-subtraction underflowed. The collapse theorem is now stated
+    over well-formed boxes only. *)
 
-Definition ibox_x1 (b : ibox) : nat := fst (fst (fst b)).
-Definition ibox_y1 (b : ibox) : nat := snd (fst (fst b)).
-Definition ibox_x2 (b : ibox) : nat := snd (fst b).
-Definition ibox_y2 (b : ibox) : nat := snd b.
+Definition raw_ibox : Type := (nat * nat * nat * nat)%type.
+
+Definition raw_ibox_x1 (b : raw_ibox) : nat := fst (fst (fst b)).
+Definition raw_ibox_y1 (b : raw_ibox) : nat := snd (fst (fst b)).
+Definition raw_ibox_x2 (b : raw_ibox) : nat := snd (fst b).
+Definition raw_ibox_y2 (b : raw_ibox) : nat := snd b.
+
+Definition ibox_well_formed (b : raw_ibox) : Prop :=
+  raw_ibox_x1 b <= raw_ibox_x2 b /\ raw_ibox_y1 b <= raw_ibox_y2 b.
+
+Definition ibox : Type := { b : raw_ibox | ibox_well_formed b }.
+
+Definition ibox_x1 (b : ibox) : nat := raw_ibox_x1 (proj1_sig b).
+Definition ibox_y1 (b : ibox) : nat := raw_ibox_y1 (proj1_sig b).
+Definition ibox_x2 (b : ibox) : nat := raw_ibox_x2 (proj1_sig b).
+Definition ibox_y2 (b : ibox) : nat := raw_ibox_y2 (proj1_sig b).
+
+Lemma ibox_x1_le_x2 : forall b : ibox, ibox_x1 b <= ibox_x2 b.
+Proof. intros [b [Hx Hy]]. exact Hx. Qed.
+
+Lemma ibox_y1_le_y2 : forall b : ibox, ibox_y1 b <= ibox_y2 b.
+Proof. intros [b [Hx Hy]]. exact Hy. Qed.
 
 Definition ibox_area (b : ibox) : nat :=
   let w := ibox_x2 b - ibox_x1 b in
