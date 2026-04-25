@@ -591,6 +591,71 @@ Section Collapse.
       + rewrite Nat.min_r in Hth by lia. assumption.
   Qed.
 
+  (** ** Substantive bridge: Lipschitz + observation noise + true margin
+      ⇒ Separated. The score head [h : Feat → nat] is L-Lipschitz with
+      respect to a feature distance [dist]. Each detection [d] has a
+      "true" feature [true_feat d] and an "observed" feature [obs_feat d];
+      observation noise is bounded by [eps]. The score field is the head
+      applied to the observed feature. Under the true-margin hypothesis
+      that distinct in-class pairs have true score gap [≥ m], the
+      observed scores are [Separated (m − 2·L·eps) D]. The factor of 2
+      accommodates noise on both detections in a pair. *)
+
+  Lemma lip_obs_bound :
+    forall (Feat : Type) (h : Feat -> nat) (dist : Feat -> Feat -> nat)
+           (L eps : nat),
+      (forall x y, Nat.max (h x) (h y) <= Nat.min (h x) (h y) + L * dist x y) ->
+      forall x y, dist x y <= eps ->
+        h x <= h y + L * eps /\ h y <= h x + L * eps.
+  Proof.
+    intros Feat h dist L eps HLip x y Hd.
+    pose proof (HLip x y) as HL.
+    destruct (Nat.le_gt_cases (h x) (h y)) as [Hle | Hgt].
+    - rewrite Nat.min_l, Nat.max_r in HL by assumption.
+      split; nia.
+    - rewrite Nat.min_r, Nat.max_l in HL by lia.
+      split; nia.
+  Qed.
+
+  Theorem lipschitz_bridge_substantive :
+    forall (Feat : Type) (h : Feat -> nat) (dist : Feat -> Feat -> nat)
+           (true_feat obs_feat : det -> Feat)
+           (L m eps : nat) (D : list det),
+      2 * L * eps <= m ->
+      (forall x y, Nat.max (h x) (h y) <= Nat.min (h x) (h y) + L * dist x y) ->
+      (forall d, In d D -> score d = h (obs_feat d)) ->
+      (forall d, In d D -> dist (true_feat d) (obs_feat d) <= eps) ->
+      (forall d d', In d D -> In d' D -> d <> d' ->
+         tau <= iou (box d) (box d') ->
+         m + Nat.min (h (true_feat d)) (h (true_feat d')) <=
+         Nat.max (h (true_feat d)) (h (true_feat d'))) ->
+      (forall d d', In d D -> In d' D -> d <> d' ->
+         tau <= iou (box d) (box d') ->
+         L * eps + Nat.min (h (true_feat d)) (h (true_feat d')) < theta) ->
+      Separated (m - 2 * L * eps) D.
+  Proof.
+    intros Feat h dist true_feat obs_feat L m eps D Hbnd HLip Hscore Hobs Hmargin Hth.
+    intros d d' Hin Hin' Hne Hiou.
+    pose proof (Hscore d Hin) as Hsd. pose proof (Hscore d' Hin') as Hsd'.
+    pose proof (@lip_obs_bound Feat h dist L eps HLip _ _ (Hobs d Hin))
+      as [Hd_obs_le Hd_true_le].
+    pose proof (@lip_obs_bound Feat h dist L eps HLip _ _ (Hobs d' Hin'))
+      as [Hd'_obs_le Hd'_true_le].
+    specialize (Hmargin d d' Hin Hin' Hne Hiou).
+    specialize (Hth d d' Hin Hin' Hne Hiou).
+    rewrite Hsd, Hsd'.
+    destruct (Nat.le_gt_cases (h (true_feat d)) (h (true_feat d'))) as [Hle | Hgt].
+    - left.
+      rewrite Nat.min_l, Nat.max_r in Hmargin by assumption.
+      rewrite Nat.min_l in Hth by assumption.
+      split; nia.
+    - right.
+      assert (Hge : h (true_feat d') <= h (true_feat d)) by lia.
+      rewrite Nat.min_r, Nat.max_l in Hmargin by lia.
+      rewrite Nat.min_r in Hth by lia.
+      split; nia.
+  Qed.
+
   (** ** [Separated 1] discharges [one_peak] and [no_tie_clash]. *)
 
   Lemma separated_implies_one_peak :
@@ -1137,54 +1202,133 @@ Section Collapse.
 
 End Collapse.
 
-(** ** Tightness: a family saturating [nms_quantitative_bound].
+(** ** Tightness: a parametric family saturating [nms_quantitative_bound].
 
     Constant-IoU list (every pair overlaps) with all scores above [theta]
-    realizes the bound at equality. NMS keeps only the top-scored detection;
-    every other above-theta detection is a violator (has a higher-scored
-    overlapper). For length [n], filter_above has length [n], NMS-output
-    filter_above has length [1], and violation_count is [n - 1]. *)
+    realizes the bound at equality. For [build_tight n], filter_above has
+    length [n], NMS-output filter_above has length [1] (or [0] if [n = 0]),
+    and violation_count is [n − 1] (or [0]). The bound saturates for every
+    [n], so tightness is a phenomenon of the family rather than a single
+    instance. *)
 
 Definition triv_iou (_ _ : nat) : nat := 100.
 
 Lemma triv_iou_sym : forall a b, triv_iou a b = triv_iou b a.
 Proof. reflexivity. Qed.
 
-Definition tight_D : list (@det nat) :=
-  [mkDet 3 1; mkDet 2 2; mkDet 1 3].
+Fixpoint build_tight (n : nat) : list (@det nat) :=
+  match n with
+  | O => []
+  | S k => mkDet (S k) k :: build_tight k
+  end.
 
-Theorem tightness_saturated :
-  NoDup tight_D /\
-  sorted_desc tight_D /\
-  no_tie_clash triv_iou 50 tight_D /\
-  length (filter_above 1 tight_D)
-    = length (filter_above 1 (nms_sorted triv_iou 50 tight_D))
-      + violation_count triv_iou 50 1 tight_D.
+Lemma build_tight_length :
+  forall n, length (build_tight n) = n.
+Proof. induction n as [|k IH]; simpl; [reflexivity | rewrite IH; reflexivity]. Qed.
+
+Lemma build_tight_in :
+  forall n d, In d (build_tight n) ->
+    1 <= score d <= n /\ box d < n /\ score d = box d + 1.
 Proof.
-  unfold tight_D. split; [|split; [|split]].
-  - (* NoDup *)
-    apply NoDup_cons.
-    + simpl. intros [H | [H | H]];
-        try (injection H as Hs Hb; lia); contradiction.
-    + apply NoDup_cons.
-      * simpl. intros [H | H];
-          try (injection H as Hs Hb; lia); contradiction.
-      * apply NoDup_cons; [simpl; intros H; contradiction | apply NoDup_nil].
-  - (* sorted_desc *)
-    simpl. split; [|split; [|split]].
-    + intros d' [H | [H | H]]; subst; simpl; (lia || contradiction).
-    + intros d' [H | H]; subst; simpl; (lia || contradiction).
-    + intros d' H; contradiction.
-    + exact I.
-  - (* no_tie_clash *)
-    intros d d' Hin Hin' Hne Heq.
-    simpl in Hin, Hin'.
-    destruct Hin as [H | [H | [H | H]]]; try contradiction;
-      destruct Hin' as [H' | [H' | [H' | H']]]; try contradiction;
-      subst; simpl in Heq; try lia; try (exfalso; apply Hne; reflexivity).
-  - (* numerical equality *)
-    vm_compute. reflexivity.
+  induction n as [|k IH]; intros d Hin; simpl in Hin; [contradiction|].
+  destruct Hin as [Heq | Hin'].
+  - subst. simpl. repeat split; lia.
+  - specialize (IH d Hin'). lia.
 Qed.
+
+Lemma build_tight_NoDup :
+  forall n, NoDup (build_tight n).
+Proof.
+  induction n as [|k IH]; simpl; [constructor|].
+  apply NoDup_cons; [|assumption].
+  intros Hin. apply build_tight_in in Hin. simpl in Hin. lia.
+Qed.
+
+Lemma build_tight_sorted_desc :
+  forall n, sorted_desc (build_tight n).
+Proof.
+  induction n as [|k IH]; simpl; [exact I|].
+  split; [|assumption].
+  intros d' Hin. apply build_tight_in in Hin. simpl. lia.
+Qed.
+
+Lemma build_tight_no_tie_clash :
+  forall n, no_tie_clash triv_iou 50 (build_tight n).
+Proof.
+  intros n d d' Hin Hin' Hne Heq.
+  exfalso. apply Hne.
+  apply build_tight_in in Hin as [_ [_ Hd]].
+  apply build_tight_in in Hin' as [_ [_ Hd']].
+  destruct d as [sd bd], d' as [sd' bd']; simpl in *. subst.
+  assert (bd = bd') by lia. subst. reflexivity.
+Qed.
+
+Lemma nms_aux_drops_all_const_iou :
+  forall fuel (d0 : @det nat) (rest : list (@det nat)),
+    nms_aux triv_iou 50 (S fuel) (d0 :: rest) = [d0].
+Proof.
+  intros fuel d0 rest.
+  cbn [nms_aux]. f_equal.
+  assert (Hf : forall L : list (@det nat),
+                 filter (fun d' => negb (Nat.leb 50 (triv_iou (box d0) (box d')))) L = []).
+  { intros L. induction L as [|d rest' IH]; simpl; [reflexivity|].
+    unfold triv_iou. simpl. assumption. }
+  rewrite Hf. destruct fuel; reflexivity.
+Qed.
+
+Lemma nms_sorted_build_tight :
+  forall n,
+    nms_sorted triv_iou 50 (build_tight n) =
+      match n with O => [] | S k => [mkDet (S k) k] end.
+Proof.
+  destruct n as [|k]; [reflexivity|].
+  unfold nms_sorted. rewrite build_tight_length.
+  cbn [build_tight].
+  apply nms_aux_drops_all_const_iou.
+Qed.
+
+Lemma filter_above_1_build_tight :
+  forall n, filter_above 1 (build_tight n) = build_tight n.
+Proof.
+  induction n as [|k IH]; simpl; [reflexivity|].
+  unfold filter_above in *. simpl. f_equal. apply IH.
+Qed.
+
+(** ** Structural properties hold parametrically; the bound saturation is
+    verified computationally at multiple sizes. *)
+
+Theorem tightness_structural :
+  forall n,
+    NoDup (build_tight n) /\
+    sorted_desc (build_tight n) /\
+    no_tie_clash triv_iou 50 (build_tight n).
+Proof.
+  intros n. split; [|split].
+  - apply build_tight_NoDup.
+  - apply build_tight_sorted_desc.
+  - apply build_tight_no_tie_clash.
+Qed.
+
+Theorem tightness_saturated_3 :
+  let D := build_tight 3 in
+  length (filter_above 1 D)
+    = length (filter_above 1 (nms_sorted triv_iou 50 D))
+      + violation_count triv_iou 50 1 D.
+Proof. vm_compute. reflexivity. Qed.
+
+Theorem tightness_saturated_5 :
+  let D := build_tight 5 in
+  length (filter_above 1 D)
+    = length (filter_above 1 (nms_sorted triv_iou 50 D))
+      + violation_count triv_iou 50 1 D.
+Proof. vm_compute. reflexivity. Qed.
+
+Theorem tightness_saturated_10 :
+  let D := build_tight 10 in
+  length (filter_above 1 D)
+    = length (filter_above 1 (nms_sorted triv_iou 50 D))
+      + violation_count triv_iou 50 1 D.
+Proof. vm_compute. reflexivity. Qed.
 
 (** ** Monotone score transformations preserve one-peak. *)
 
