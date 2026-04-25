@@ -1236,6 +1236,43 @@ Section Collapse.
       + apply IH; [exact Hlt | apply NoDup_filter; assumption].
   Qed.
 
+  (** ** NMS soundness: any two distinct surviving detections have IoU < tau.
+
+      The operational contract of NMS independent of any input invariant.
+      The collapse theorem says NMS does nothing under one-peak; this
+      soundness lemma says NMS does the right thing in general. *)
+
+  Theorem nms_sorted_sound :
+    forall D d d',
+      In d (nms_sorted D) -> In d' (nms_sorted D) ->
+      d <> d' -> iou (box d) (box d') < tau.
+  Proof.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length det))).
+    intros d d' Hin Hin' Hne.
+    destruct D as [|d0 rest].
+    - rewrite nms_sorted_equation in Hin. contradiction.
+    - rewrite nms_sorted_equation in Hin, Hin'.
+      set (P := fun d' => negb (Nat.leb tau (iou (box d0) (box d')))).
+      set (restf := filter P rest).
+      assert (Hlt : ltof _ (@length det) restf (d0 :: rest)).
+      { unfold ltof, restf. simpl.
+        pose proof (filter_length_le P rest) as HL. lia. }
+      destruct Hin as [Heq | Hin]; destruct Hin' as [Heq' | Hin'].
+      + subst. contradiction.
+      + subst d.
+        apply nms_sorted_subset in Hin'.
+        apply filter_In in Hin' as [_ Hp]. unfold P in Hp.
+        apply negb_true_iff in Hp. apply Nat.leb_gt in Hp. assumption.
+      + subst d'.
+        apply nms_sorted_subset in Hin.
+        apply filter_In in Hin as [_ Hp]. unfold P in Hp.
+        apply negb_true_iff in Hp. apply Nat.leb_gt in Hp.
+        rewrite iou_sym. assumption.
+      + apply (IH restf Hlt); assumption.
+  Qed.
+
   Lemma filter_above_nms_NoDup :
     forall D, NoDup D -> NoDup (filter_above (nms_sorted D)).
   Proof.
