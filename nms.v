@@ -453,6 +453,53 @@ Proof.
   apply vec_inf_map_dot_bound.
 Qed.
 
+Lemma mat_vec_length :
+  forall M v, length (mat_vec M v) = length M.
+Proof.
+  intros M v. induction M as [|row rest IH]; simpl; [reflexivity|].
+  rewrite IH. reflexivity.
+Qed.
+
+(** ** Linear-layer instantiation. A single linear-layer score head [v ↦ M v]
+    has L^infinity-Lipschitz constant bounded by [mat_inf_norm M]: a feature
+    perturbation [eps] yields a score perturbation bounded by
+    [mat_inf_norm M * eps]. This supplies the [L * eps] premise of the
+    bridge theorem when the score head reduces to a single linear stage. *)
+
+Corollary linear_layer_lipschitz :
+  forall M u v,
+    length u = length v ->
+    vec_dist (mat_vec M u) (mat_vec M v)
+    <= mat_inf_norm M * vec_dist u v.
+Proof. exact mat_vec_lipschitz. Qed.
+
+(** ** ReLU two-layer network. The network [v ↦ M2 (ReLU (M1 v))] has
+    L^infinity-Lipschitz constant bounded by [mat_inf_norm M2 * mat_inf_norm M1]
+    (ReLU contributes a factor of 1). Generalises by induction to arbitrary
+    depth. *)
+
+Corollary relu_two_layer_lipschitz :
+  forall M1 M2 u v,
+    length u = length v ->
+    vec_dist (mat_vec M2 (map (fun x => Rmax 0 x) (mat_vec M1 u)))
+             (mat_vec M2 (map (fun x => Rmax 0 x) (mat_vec M1 v)))
+    <= mat_inf_norm M2 * (mat_inf_norm M1 * vec_dist u v).
+Proof.
+  intros M1 M2 u v Hlen.
+  set (u1 := map (fun x => Rmax 0 x) (mat_vec M1 u)).
+  set (v1 := map (fun x => Rmax 0 x) (mat_vec M1 v)).
+  assert (Hlen1 : length u1 = length v1).
+  { unfold u1, v1. rewrite !length_map, !mat_vec_length. reflexivity. }
+  eapply Rle_trans; [apply mat_vec_lipschitz; exact Hlen1|].
+  apply Rmult_le_compat_l; [apply mat_inf_norm_nonneg|].
+  unfold u1, v1.
+  destruct (vlip_map_relu) as [_ Hrelu].
+  specialize (Hrelu (mat_vec M1 u) (mat_vec M1 v)).
+  rewrite Rmult_1_l in Hrelu.
+  eapply Rle_trans; [apply Hrelu|].
+  apply mat_vec_lipschitz; assumption.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ******************************************************************** *)
@@ -503,6 +550,70 @@ Section Collapse.
       d <> d' ->
       score d = score d' ->
       iou (box d) (box d') < tau.
+
+  (** ** Separated: every distinct high-IoU pair has score gap at least
+      [slack] and the lower score below [theta]. *)
+
+  Definition Separated (slack : nat) (D : list det) : Prop :=
+    forall d d', In d D -> In d' D ->
+      d <> d' ->
+      tau <= iou (box d) (box d') ->
+      (score d + slack <= score d' /\ score d < theta) \/
+      (score d' + slack <= score d /\ score d' < theta).
+
+  (** ** Bridge: Lipschitz score head ⇒ Separated.
+
+      Hypotheses encode an L-Lipschitz score head, feature-perturbation bound
+      [eps], and underlying margin [m]. Conclusion: [Separated (m − L * eps) D]
+      holds. The Lipschitz bound [L * eps] is discharged from Part I (e.g.
+      [mat_vec_lipschitz] applied to the network stack); the margin [m] is
+      the training commitment; the threshold side is part of the per-pair
+      hypothesis. *)
+
+  Theorem lipschitz_score_implies_separation :
+    forall (D : list det) (L m eps : nat),
+      L * eps <= m ->
+      (forall d d', In d D -> In d' D -> d <> d' ->
+         tau <= iou (box d) (box d') ->
+         m + Nat.min (score d) (score d')
+           <= Nat.max (score d) (score d') + L * eps  /\
+         Nat.min (score d) (score d') < theta) ->
+      Separated (m - L * eps) D.
+  Proof.
+    intros D L m eps Hbnd Hpair d d' Hin Hin' Hne Hiou.
+    specialize (Hpair d d' Hin Hin' Hne Hiou) as [Hgap Hth].
+    destruct (Nat.le_gt_cases (score d) (score d')) as [Hle | Hgt].
+    - left. split.
+      + rewrite Nat.min_l, Nat.max_r in Hgap by assumption. lia.
+      + rewrite Nat.min_l in Hth by assumption. assumption.
+    - right. assert (Hge : score d' <= score d) by lia. split.
+      + rewrite Nat.min_r, Nat.max_l in Hgap by lia. lia.
+      + rewrite Nat.min_r in Hth by lia. assumption.
+  Qed.
+
+  (** ** [Separated 1] discharges [one_peak] and [no_tie_clash]. *)
+
+  Lemma separated_implies_one_peak :
+    forall D, Separated 1 D -> one_peak D.
+  Proof.
+    intros D Hsep d d' Hin Hin' Hiou Hlt.
+    assert (Hne : d <> d') by (intro Heq; subst; lia).
+    specialize (Hsep d d' Hin Hin' Hne Hiou).
+    destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+    - assumption.
+    - lia.
+  Qed.
+
+  Lemma separated_implies_no_tie_clash :
+    forall D, Separated 1 D -> no_tie_clash D.
+  Proof.
+    intros D Hsep d d' Hin Hin' Hne Heq.
+    destruct (Nat.leb_spec tau (iou (box d) (box d'))) as [Hge | Hlt_iou].
+    - exfalso.
+      specialize (Hsep d d' Hin Hin' Hne Hge).
+      destruct Hsep as [[Hgap _] | [Hgap _]]; lia.
+    - assumption.
+  Qed.
 
   Lemma filter_length_le :
     forall (A : Type) (P : A -> bool) (L : list A),
@@ -684,6 +795,21 @@ Section Collapse.
     apply (@nms_aux_collapse (length D) D (Nat.le_refl _) Hnd Hsd Hop Hntc).
   Qed.
 
+  (** ** Corollary: NMS reduces to threshold filter under [Separated 1]. *)
+
+  Corollary nms_trivial_under_separation :
+    forall D,
+      NoDup D ->
+      sorted_desc D ->
+      Separated 1 D ->
+      filter_above (nms_sorted D) = filter_above D.
+  Proof.
+    intros D Hnd Hsd Hsep.
+    apply (nms_collapse_onepeak Hnd Hsd
+             (separated_implies_one_peak Hsep)
+             (separated_implies_no_tie_clash Hsep)).
+  Qed.
+
   (** ** Soft-NMS: pointwise score decay also collapses under one-peak. *)
 
   Definition has_higher_overlapper (D : list det) (d : det) : bool :=
@@ -769,6 +895,16 @@ Section Collapse.
     apply filter_above_map_identity_on_above.
     - intros d Hd Hab. apply apply_decay_keeps_above; assumption.
     - intros d Hd Hab. apply apply_decay_keeps_below; assumption.
+  Qed.
+
+  Corollary soft_nms_trivial_under_separation :
+    forall D decay,
+      (forall n, decay n <= n) ->
+      Separated 1 D ->
+      filter_above (soft_nms decay D) = filter_above D.
+  Proof.
+    intros. apply soft_nms_collapse_onepeak;
+      [assumption | apply separated_implies_one_peak; assumption].
   Qed.
 
   (** ** Robustness: NMS only drops one-peak violators. *)
@@ -865,7 +1001,190 @@ Section Collapse.
     exists d'. split; [assumption|]. split; assumption.
   Qed.
 
+  Corollary above_non_violator_survives_under_separation :
+    forall D d,
+      NoDup D -> sorted_desc D -> Separated 1 D ->
+      In d D ->
+      above d = true ->
+      (~ above_violator D d) ->
+      In d (nms_sorted D).
+  Proof.
+    intros D d Hnd Hsd Hsep.
+    apply above_non_violator_survives;
+      [assumption | assumption | apply separated_implies_no_tie_clash; assumption].
+  Qed.
+
+  (** ** Quantitative bound: NMS drops at most [violation_count D] above-theta
+      detections. The qualitative case (zero violations) recovers
+      [above_non_violator_survives] for every above-theta element. *)
+
+  Definition violator_above (D : list det) : list det :=
+    filter (fun d => andb (above d) (has_higher_overlapper D d)) D.
+
+  Definition non_violator_above (D : list det) : list det :=
+    filter (fun d => andb (above d) (negb (has_higher_overlapper D d))) D.
+
+  Definition violation_count (D : list det) : nat := length (violator_above D).
+
+  Lemma filter_split_andb :
+    forall (A : Type) (P Q : A -> bool) (l : list A),
+      length (filter P l) =
+        length (filter (fun x => P x && negb (Q x)) l)
+        + length (filter (fun x => P x && Q x) l).
+  Proof.
+    intros A P Q l. induction l as [|x rest IH]; simpl; [reflexivity|].
+    destruct (P x) eqn:HP; destruct (Q x) eqn:HQ; simpl; lia.
+  Qed.
+
+  Lemma filter_above_split :
+    forall D,
+      length (filter_above D) =
+        length (non_violator_above D) + length (violator_above D).
+  Proof.
+    intros D. unfold filter_above, non_violator_above, violator_above.
+    apply (filter_split_andb above (has_higher_overlapper D)).
+  Qed.
+
+  Lemma non_violator_above_in_nms :
+    forall D,
+      NoDup D -> sorted_desc D -> no_tie_clash D ->
+      forall d, In d (non_violator_above D) -> In d (filter_above (nms_sorted D)).
+  Proof.
+    intros D Hnd Hsd Hntc d Hin.
+    unfold non_violator_above in Hin.
+    apply filter_In in Hin as [Hin_D Hand].
+    apply Bool.andb_true_iff in Hand as [Hab Hnov].
+    apply negb_true_iff in Hnov.
+    assert (Hnv : ~ above_violator D d).
+    { intros [_ [d' [Hin' [Hiou Hlt]]]].
+      unfold has_higher_overlapper in Hnov.
+      assert (Hex : exists d', In d' D /\
+                     (Nat.ltb (score d) (score d') &&
+                      Nat.leb tau (iou (box d) (box d'))) = true).
+      { exists d'. split; [assumption|].
+        apply Bool.andb_true_iff. split.
+        - apply Nat.ltb_lt; assumption.
+        - apply Nat.leb_le; assumption. }
+      apply existsb_exists in Hex.
+      congruence. }
+    pose proof (above_non_violator_survives Hnd Hsd Hntc Hin_D Hab Hnv) as Hnms.
+    unfold filter_above. apply filter_In. split; [assumption|exact Hab].
+  Qed.
+
+  Lemma non_violator_above_NoDup :
+    forall D, NoDup D -> NoDup (non_violator_above D).
+  Proof.
+    intros D Hnd. unfold non_violator_above. apply NoDup_filter. assumption.
+  Qed.
+
+  Lemma nms_aux_subset :
+    forall fuel D x, In x (nms_aux fuel D) -> In x D.
+  Proof.
+    induction fuel as [|fuel' IH]; intros D x Hin; simpl in Hin.
+    - destruct D; [contradiction | contradiction].
+    - destruct D as [|d rest]; [contradiction|].
+      destruct Hin as [Heq | Hin'].
+      + left; assumption.
+      + right. apply IH in Hin'. apply filter_In in Hin'. tauto.
+  Qed.
+
+  Lemma nms_aux_NoDup :
+    forall fuel D, NoDup D -> NoDup (nms_aux fuel D).
+  Proof.
+    induction fuel as [|fuel' IH]; intros D Hnd; simpl.
+    - destruct D; constructor.
+    - destruct D as [|d rest]; [constructor|].
+      inversion Hnd; subst.
+      constructor.
+      + intros Hin. apply nms_aux_subset in Hin.
+        apply filter_In in Hin as [Hin _]. contradiction.
+      + apply IH. apply NoDup_filter. assumption.
+  Qed.
+
+  Lemma filter_above_nms_NoDup :
+    forall D, NoDup D -> NoDup (filter_above (nms_sorted D)).
+  Proof.
+    intros D Hnd. unfold filter_above, nms_sorted.
+    apply NoDup_filter. apply nms_aux_NoDup. assumption.
+  Qed.
+
+  Theorem nms_quantitative_bound :
+    forall D,
+      NoDup D ->
+      sorted_desc D ->
+      no_tie_clash D ->
+      length (filter_above D)
+        <= length (filter_above (nms_sorted D)) + violation_count D.
+  Proof.
+    intros D Hnd Hsd Hntc.
+    rewrite filter_above_split.
+    apply Nat.add_le_mono_r.
+    apply NoDup_incl_length.
+    - apply non_violator_above_NoDup; assumption.
+    - intros d Hin. apply non_violator_above_in_nms; assumption.
+  Qed.
+
+  Corollary nms_quantitative_under_separation :
+    forall D,
+      NoDup D -> sorted_desc D -> Separated 1 D ->
+      length (filter_above D)
+        <= length (filter_above (nms_sorted D)) + violation_count D.
+  Proof.
+    intros D Hnd Hsd Hsep.
+    apply nms_quantitative_bound;
+      [assumption | assumption | apply separated_implies_no_tie_clash; assumption].
+  Qed.
+
 End Collapse.
+
+(** ** Tightness: a family saturating [nms_quantitative_bound].
+
+    Constant-IoU list (every pair overlaps) with all scores above [theta]
+    realizes the bound at equality. NMS keeps only the top-scored detection;
+    every other above-theta detection is a violator (has a higher-scored
+    overlapper). For length [n], filter_above has length [n], NMS-output
+    filter_above has length [1], and violation_count is [n - 1]. *)
+
+Definition triv_iou (_ _ : nat) : nat := 100.
+
+Lemma triv_iou_sym : forall a b, triv_iou a b = triv_iou b a.
+Proof. reflexivity. Qed.
+
+Definition tight_D : list (@det nat) :=
+  [mkDet 3 1; mkDet 2 2; mkDet 1 3].
+
+Theorem tightness_saturated :
+  NoDup tight_D /\
+  sorted_desc tight_D /\
+  no_tie_clash triv_iou 50 tight_D /\
+  length (filter_above 1 tight_D)
+    = length (filter_above 1 (nms_sorted triv_iou 50 tight_D))
+      + violation_count triv_iou 50 1 tight_D.
+Proof.
+  unfold tight_D. split; [|split; [|split]].
+  - (* NoDup *)
+    apply NoDup_cons.
+    + simpl. intros [H | [H | H]];
+        try (injection H as Hs Hb; lia); contradiction.
+    + apply NoDup_cons.
+      * simpl. intros [H | H];
+          try (injection H as Hs Hb; lia); contradiction.
+      * apply NoDup_cons; [simpl; intros H; contradiction | apply NoDup_nil].
+  - (* sorted_desc *)
+    simpl. split; [|split; [|split]].
+    + intros d' [H | [H | H]]; subst; simpl; (lia || contradiction).
+    + intros d' [H | H]; subst; simpl; (lia || contradiction).
+    + intros d' H; contradiction.
+    + exact I.
+  - (* no_tie_clash *)
+    intros d d' Hin Hin' Hne Heq.
+    simpl in Hin, Hin'.
+    destruct Hin as [H | [H | [H | H]]]; try contradiction;
+      destruct Hin' as [H' | [H' | [H' | H']]]; try contradiction;
+      subst; simpl in Heq; try lia; try (exfalso; apply Hne; reflexivity).
+  - (* numerical equality *)
+    vm_compute. reflexivity.
+Qed.
 
 (** ** Monotone score transformations preserve one-peak. *)
 
@@ -974,6 +1293,59 @@ Theorem heatmap_local_nms_collapse :
 Proof.
   intros r theta D Hnd Hsd Hop Hntc.
   apply (nms_collapse_onepeak (heatmap_iou_sym r) Hnd Hsd Hop Hntc).
+Qed.
+
+(** ** Heatmap pixel separation entails [Separated]. If all distinct
+    detections in [D] have pixel distance strictly greater than [r], then
+    no pair has heatmap-IoU >= 1, so [Separated (heatmap_iou r) 1] holds
+    vacuously for any [theta] and [slack]. *)
+
+Lemma heatmap_pixel_separation :
+  forall (r theta slack : nat) (D : list (@det pixel)),
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       r < pdist (box d) (box d')) ->
+    Separated (heatmap_iou r) 1 theta slack D.
+Proof.
+  intros r theta slack D Hsep d d' Hin Hin' Hne Hiou.
+  exfalso.
+  unfold heatmap_iou in Hiou.
+  destruct (Nat.leb (pdist (box d) (box d')) r) eqn:E.
+  - apply Nat.leb_le in E.
+    specialize (Hsep d d' Hin Hin' Hne). lia.
+  - inversion Hiou.
+Qed.
+
+(** ** Counterexample to the converse of [nms_collapse_onepeak]: equality
+    of [filter_above (nms_sorted D)] and [filter_above D] does not imply
+    [Separated 1 D]. The empty-filter case (no detections above [theta])
+    trivially satisfies the equality but allows below-theta tied pairs that
+    violate [Separated]. *)
+
+Definition cex_D : list (@det nat) := [mkDet 0 1; mkDet 0 2].
+
+Example converse_fails :
+  NoDup cex_D /\
+  sorted_desc cex_D /\
+  filter_above 1 (nms_sorted triv_iou 50 cex_D) = filter_above 1 cex_D /\
+  ~ Separated triv_iou 50 1 1 cex_D.
+Proof.
+  unfold cex_D. split; [|split; [|split]].
+  - apply NoDup_cons.
+    + simpl. intros [H | H]; [inversion H; lia | contradiction].
+    + apply NoDup_cons; [simpl; intros H; contradiction | apply NoDup_nil].
+  - simpl. split; [|split; [|exact I]].
+    + intros d' [H | H]; [subst; simpl; lia | contradiction].
+    + intros d' H; contradiction.
+  - vm_compute. reflexivity.
+  - intros Hsep.
+    specialize (Hsep (mkDet 0 1) (mkDet 0 2)).
+    assert (HinL : In (mkDet 0 1) [mkDet 0 1; mkDet 0 2]) by (simpl; auto).
+    assert (HinR : In (mkDet 0 2) [mkDet 0 1; mkDet 0 2]) by (simpl; auto).
+    assert (Hne : mkDet 0 1 <> mkDet 0 2) by (intro H; inversion H; lia).
+    assert (Hiou : 50 <= triv_iou (box (mkDet 0 1)) (box (mkDet 0 2)))
+      by (unfold triv_iou; lia).
+    specialize (Hsep HinL HinR Hne Hiou).
+    cbn in Hsep. lia.
 Qed.
 
 (** ** Mask-NMS (instance segmentation). *)
