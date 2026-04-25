@@ -454,17 +454,7 @@ Proof.
   apply vec_inf_map_dot_bound.
 Qed.
 
-(** ** [mat_inf_norm] is the tight Lipschitz constant.
-
-    For every nonnegative [L] there exists a matrix [M] and vectors
-    [u], [v] for which the Lipschitz bound is saturated:
-
-       vec_dist (mat_vec M u) (mat_vec M v) = mat_inf_norm M * vec_dist u v.
-
-    The witness is the [1 x 1] matrix [[[L]]] with [u = [1]] and [v = [0]];
-    every component of the inequality reduces to [L]. The general
-    construction (signs of the row achieving max row sum) extends this
-    to arbitrary [M]. *)
+(** ** For every nonnegative [L], some [M], [u], [v] saturate the bound. *)
 
 Theorem mat_inf_norm_lipschitz_tight :
   forall L : R,
@@ -496,11 +486,7 @@ Proof.
   rewrite IH. reflexivity.
 Qed.
 
-(** ** Linear-layer instantiation. A single linear-layer score head [v ↦ M v]
-    has L^infinity-Lipschitz constant bounded by [mat_inf_norm M]: a feature
-    perturbation [eps] yields a score perturbation bounded by
-    [mat_inf_norm M * eps]. This supplies the [L * eps] premise of the
-    bridge theorem when the score head reduces to a single linear stage. *)
+(** ** Single linear layer is [mat_inf_norm M]-Lipschitz. *)
 
 Corollary linear_layer_lipschitz :
   forall M u v,
@@ -509,10 +495,7 @@ Corollary linear_layer_lipschitz :
     <= mat_inf_norm M * vec_dist u v.
 Proof. exact mat_vec_lipschitz. Qed.
 
-(** ** ReLU two-layer network. The network [v ↦ M2 (ReLU (M1 v))] has
-    L^infinity-Lipschitz constant bounded by [mat_inf_norm M2 * mat_inf_norm M1]
-    (ReLU contributes a factor of 1). Generalises by induction to arbitrary
-    depth. *)
+(** ** [v ↦ M2 (ReLU (M1 v))] is [mat_inf_norm M2 * mat_inf_norm M1]-Lipschitz. *)
 
 Corollary relu_two_layer_lipschitz :
   forall M1 M2 u v,
@@ -536,13 +519,7 @@ Proof.
   apply mat_vec_lipschitz; assumption.
 Qed.
 
-(** ** Type-enforced shape: dimension-indexed [Vector n] and [Matrix r c].
-
-    [Vector n] and [Matrix r c] are sigma types carrying length and
-    rectangularity proofs. The typed [tmat_vec : Matrix r c -> Vector c
-    -> Vector r] makes dimensional compatibility a type constraint;
-    [tmat_vec_lipschitz] inherits the operator-norm bound from
-    [mat_vec_lipschitz] without any [length u = length v] hypothesis. *)
+(** ** Dimension-indexed [Vector n] and [Matrix r c] via sigma types. *)
 
 Definition Vector (n : nat) : Type := { v : list R | length v = n }.
 
@@ -643,11 +620,6 @@ Section Collapse.
     - right. split; [lia | assumption].
   Qed.
 
-  (** ** [one_peak] and [no_tie_clash] are derivable from [Separated 1].
-      Conversely, [one_peak] and [no_tie_clash] together imply [Separated 1].
-      The keystone collapse theorem is proven once over [Separated 1] and
-      lifted to either form via these implications. *)
-
   Definition one_peak (D : list det) : Prop :=
     forall d d', In d D -> In d' D ->
       tau <= iou (box d) (box d') ->
@@ -660,14 +632,8 @@ Section Collapse.
       score d = score d' ->
       iou (box d) (box d') < tau.
 
-  (** ** Bridge: Lipschitz score head ⇒ Separated.
-
-      Hypotheses encode an L-Lipschitz score head, feature-perturbation bound
-      [eps], and underlying margin [m]. Conclusion: [Separated (m − L * eps) D]
-      holds. The Lipschitz bound [L * eps] is discharged from Part I (e.g.
-      [mat_vec_lipschitz] applied to the network stack); the margin [m] is
-      the training commitment; the threshold side is part of the per-pair
-      hypothesis. *)
+  (** ** Bridge: L-Lipschitz score head with feature noise [eps] and
+      pairwise margin [m] yields [Separated (m - L * eps)]. *)
 
   Theorem lipschitz_score_implies_separation :
     forall (D : list det) (L m eps : nat),
@@ -690,15 +656,7 @@ Section Collapse.
       + rewrite Nat.min_r in Hth by lia. assumption.
   Qed.
 
-  (** ** Substantive bridge: Lipschitz + observation noise + true margin
-      ⇒ Separated. The score head [h : Feat → nat] is L-Lipschitz with
-      respect to a feature distance [dist]. Each detection [d] has a
-      "true" feature [true_feat d] and an "observed" feature [obs_feat d];
-      observation noise is bounded by [eps]. The score field is the head
-      applied to the observed feature. Under the true-margin hypothesis
-      that distinct in-class pairs have true score gap [≥ m], the
-      observed scores are [Separated (m − 2·L·eps) D]. The factor of 2
-      accommodates noise on both detections in a pair. *)
+  (** ** Bridge with explicit true/observed features and noise bound. *)
 
   Lemma lip_obs_bound :
     forall (Feat : Type) (h : Feat -> nat) (dist : Feat -> Feat -> nat)
@@ -1076,12 +1034,8 @@ Section Collapse.
       [assumption | apply separated_implies_one_peak; assumption].
   Qed.
 
-  (** ** Quantitative behaviour of soft-NMS on individual scores.
-
-      Above-threshold detections have their scores preserved exactly:
-      under one-peak no above-threshold detection has a higher-scored
-      overlapper, so the decay function is never applied to it. Below-
-      threshold detections can be decayed (and the score never increases). *)
+  (** ** Per-detection soft-NMS scores: above-theta unchanged, below-theta
+      monotonically non-increasing under decay. *)
 
   Theorem soft_nms_score_above_unchanged :
     forall D d decay,
@@ -1194,9 +1148,7 @@ Section Collapse.
       [assumption | assumption | apply separated_implies_no_tie_clash; assumption].
   Qed.
 
-  (** ** Quantitative bound: NMS drops at most [violation_count D] above-theta
-      detections. The qualitative case (zero violations) recovers
-      [above_non_violator_survives] for every above-theta element. *)
+  (** ** NMS drops at most [violation_count D] above-theta detections. *)
 
   Definition violator_above (D : list det) : list det :=
     filter (fun d => andb (above d) (has_higher_overlapper D d)) D.
@@ -1299,11 +1251,7 @@ Section Collapse.
       + apply IH; [exact Hlt | apply NoDup_filter; assumption].
   Qed.
 
-  (** ** NMS soundness: any two distinct surviving detections have IoU < tau.
-
-      The operational contract of NMS independent of any input invariant.
-      The collapse theorem says NMS does nothing under one-peak; this
-      soundness lemma says NMS does the right thing in general. *)
+  (** ** Distinct surviving detections have IoU < tau. *)
 
   Theorem nms_sorted_sound :
     forall D d d',
@@ -1372,14 +1320,7 @@ Section Collapse.
 
 End Collapse.
 
-(** ** Tightness: a parametric family saturating [nms_quantitative_bound].
-
-    Constant-IoU list (every pair overlaps) with all scores above [theta]
-    realizes the bound at equality. For [build_tight n], filter_above has
-    length [n], NMS-output filter_above has length [1] (or [0] if [n = 0]),
-    and violation_count is [n − 1] (or [0]). The bound saturates for every
-    [n], so tightness is a phenomenon of the family rather than a single
-    instance. *)
+(** ** [build_tight n] saturates [nms_quantitative_bound] for every [n]. *)
 
 Definition triv_iou (_ _ : nat) : nat := 100.
 
@@ -1476,14 +1417,6 @@ Proof.
   - apply build_tight_sorted_desc.
   - apply build_tight_no_tie_clash.
 Qed.
-
-(** ** Compute [has_higher_overlapper] on [build_tight].
-
-    Under [triv_iou] and [tau = 50], the overlapper test reduces to
-    the score comparison [score d < score d']: any pair of detections
-    overlaps with IoU 100, so the only condition left is the strict
-    score gap. Therefore an element of [build_tight n] has a higher
-    overlapper iff its score is strictly less than [n]. *)
 
 Lemma has_higher_overlapper_build_tight :
   forall n d, In d (build_tight n) ->
@@ -1676,13 +1609,7 @@ End MonotoneTransform.
 (** *                  Part III. Domain instantiations                    *)
 (** ******************************************************************** *)
 
-(** ** IoU axiomatisation.
-
-    An [IoUStructure Box] is an IoU function on [Box] together with its
-    maximum value [iou_max], a symmetry proof, and a bound on the range.
-    Each domain instance carries its own [iou_max] (heatmap returns
-    {0,1}; mask and ibox return {0..100}), giving the [tau] threshold
-    a unit semantics within the structure. *)
+(** ** Symmetric, bounded IoU function on [Box]. *)
 
 Record IoUStructure (Box : Type) := mkIoU {
   iou_fn : Box -> Box -> nat;
@@ -1757,10 +1684,7 @@ Proof.
   apply (nms_collapse_onepeak (heatmap_iou_sym r) Hnd Hsd Hop Hntc).
 Qed.
 
-(** ** Heatmap pixel separation entails [Separated]. If all distinct
-    detections in [D] have pixel distance strictly greater than [r], then
-    no pair has heatmap-IoU >= 1, so [Separated (heatmap_iou r) 1] holds
-    vacuously for any [theta] and [slack]. *)
+(** ** Pairwise [pdist > r] entails [Separated (heatmap_iou r) 1]. *)
 
 Lemma heatmap_pixel_separation :
   forall (r theta slack : nat) (D : list (@det pixel)),
@@ -1777,14 +1701,7 @@ Proof.
   - inversion Hiou.
 Qed.
 
-(** ** Sortedness is necessary, not just a proof convenience.
-
-    The list [D := mkDet 30 0 :: mkDet 100 1] is unsorted by score but
-    satisfies one_peak and no_tie_clash (the only above-threshold pair
-    has the right structure). Yet [filter_above 50 (nms_sorted D)] is
-    empty (NMS keeps the lower-scored head and suppresses the
-    higher-scored tail), while [filter_above 50 D] is the high-scored
-    detection. The collapse equality fails. *)
+(** ** Counterexample showing [sorted_desc] is a necessary precondition. *)
 
 Definition cex_unsorted : list (@det nat) := [mkDet 30 0; mkDet 100 1].
 
@@ -1817,11 +1734,7 @@ Proof.
   - vm_compute. discriminate.
 Qed.
 
-(** ** Counterexample to the converse of [nms_collapse_onepeak]: equality
-    of [filter_above (nms_sorted D)] and [filter_above D] does not imply
-    [Separated 1 D]. The empty-filter case (no detections above [theta])
-    trivially satisfies the equality but allows below-theta tied pairs that
-    violate [Separated]. *)
+(** ** Counterexample showing the converse of [nms_collapse_onepeak] fails. *)
 
 Definition cex_D : list (@det nat) := [mkDet 0 1; mkDet 0 2].
 
@@ -1880,12 +1793,7 @@ Section MaskNMS.
     reflexivity.
   Qed.
 
-  (** ** Truncation bound for [mask_iou].
-
-      The integer encoding [mask_iou = (i * 100) / u] is the floor of
-      the exact rational [i * 100 / u]; the rounding gap is at most one
-      unit. A real-valued IoU bound from training translates to an
-      [nat] one-peak hypothesis with one extra unit of margin. *)
+  (** ** Floor-rounding bound: [mask_iou * union <= inter * 100 < (mask_iou + 1) * union]. *)
 
   Lemma mask_iou_truncation_bound :
     forall m1 m2,
@@ -1932,13 +1840,7 @@ Section MaskNMS.
 
 End MaskNMS.
 
-(** ** DETR post-hoc filtering (integer-coordinate boxes).
-
-    Boxes carry a structural well-formedness proof (x1 <= x2 /\ y1 <= y2)
-    via a sigma type. This eliminates the silent zero in [ibox_inter_area]
-    that previously equated "degenerate box" with "empty intersection"
-    when [nat]-subtraction underflowed. The collapse theorem is now stated
-    over well-formed boxes only. *)
+(** ** Integer-coordinate boxes with sigma-typed well-formedness. *)
 
 Definition raw_ibox : Type := (nat * nat * nat * nat)%type.
 
@@ -2048,10 +1950,7 @@ Qed.
 Definition ibox_iou_struct : IoUStructure ibox :=
   @mkIoU ibox ibox_iou 100 ibox_iou_sym ibox_iou_le_100.
 
-(** ** Truncation bound for [ibox_iou].
-
-    [ibox_iou] is the floor of the exact rational [(inter * 100) / union];
-    the rounding gap is at most one unit, identical to [mask_iou]. *)
+(** ** Floor-rounding bound for [ibox_iou]. *)
 
 Lemma ibox_iou_truncation_bound :
   forall a b,
@@ -2160,14 +2059,8 @@ Proof.
   rewrite Nat.mul_0_l, Nat.div_0_l by lia. reflexivity.
 Qed.
 
-(** ** Depth-N multilayer Lipschitz chain.
-
-    Generalises [relu_two_layer_lipschitz] to an arbitrary list of weight
-    matrices. The chain [v ↦ M_n (ReLU (M_{n-1} (... ReLU (M_1 v) ...)))]
-    has L^infinity Lipschitz constant bounded by the product of the
-    operator norms. Suffices for arbitrary-depth ReLU MLPs (and thus FCOS
-    classification heads), with the bound recovered by structural
-    induction on the matrix list. *)
+(** ** [v ↦ M_n (ReLU (M_{n-1} (... ReLU (M_1 v))))] is bounded by
+    the product of [mat_inf_norm M_i]. *)
 
 Local Open Scope R_scope.
 
@@ -2240,10 +2133,7 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ** Threshold-quantified converse: equality of [filter_above]
-    at *every* threshold implies [Separated]. The naive converse
-    ([converse_fails]) is broken by the empty-filter case; quantifying
-    over threshold pins down exactly what NMS collapse characterises. *)
+(** ** Equality of [filter_above] at every threshold implies [Separated]. *)
 
 Lemma filter_above_0_is_id :
   forall (Box : Type) (D : list (@det Box)), filter_above 0 D = D.
@@ -2270,10 +2160,7 @@ Proof.
   lia.
 Qed.
 
-(** ** Multi-class lift via [Box * Class]. Each detection carries
-    a class tag; [class_iou] is the per-class IoU (zero across classes).
-    Yields a multi-class collapse theorem matching torchvision's
-    [batched_nms]. *)
+(** ** Multi-class lift: [Box * Class] with [class_iou] zero across classes. *)
 
 Section MultiClass.
   Variable Box : Type.
@@ -2438,13 +2325,7 @@ Proof.
   intros. apply (nms_collapse_onepeak bitmap_iou_sym); assumption.
 Qed.
 
-(** ** Complexity bound: NMS makes at most O(n^2) IoU evaluations.
-
-    We define an explicit IoU-call counter [nms_iou_count] mirroring the
-    structure of [nms_sorted] and prove it is bounded by [length D * length D].
-    Threshold filtering is O(n) (one comparison per detection), so under
-    [Separated 1] the [filter_above]-equivalence theorem turns an O(n^2)
-    NMS into an O(n) sort-and-filter without changing the output set. *)
+(** ** [nms_iou_count D <= |D| * |D|]. *)
 
 Section Complexity.
   Variable Box : Type.
@@ -2496,12 +2377,7 @@ Section Complexity.
   Qed.
 End Complexity.
 
-(** ** Hausdorff geometric bound.
-
-    The above-theta detections in [D] dropped by NMS are not arbitrary —
-    each has a high-IoU [box] relationship with some kept detection.
-    Strengthens the cardinality-only [nms_quantitative_bound] with
-    structural information about *where* the dropped detections sit. *)
+(** ** Every dropped above-theta detection has a kept overlapper at IoU >= tau. *)
 
 Theorem hausdorff_drop_has_suppressor :
   forall (Box : Type) (iou : Box -> Box -> nat),
@@ -2557,11 +2433,7 @@ Proof.
       rewrite nms_sorted_equation. right. exact Hd'in.
 Qed.
 
-(** ** Quantisation transport: a [q]-step quantiser on scores
-    preserves [Separated] with margin reduced by [2*q]. Justifies
-    post-training int8 quantisation: a Separated detector with margin
-    [m + 2q] remains Separated with margin [m] after quantising scores
-    to multiples of [q]. *)
+(** ** Quantising scores to multiples of [q] reduces the margin by [2*q]. *)
 
 Definition quantise (q s : nat) : nat := s / q * q.
 
@@ -2621,8 +2493,7 @@ Proof.
     + lia.
 Qed.
 
-(** ** Decidable [Separated]: given decidable equality on [Box],
-    check the predicate by enumerating all pairs. *)
+(** ** [Separated] is decidable given decidable [Box] equality. *)
 
 Section SeparatedDec.
   Variable Box : Type.
@@ -2723,15 +2594,9 @@ Section SeparatedDec.
   Qed.
 End SeparatedDec.
 
-(** ** Centerness preserves [Separated] when co-monotone with score.
-
-    In FCOS, centerness [c : Box -> nat] is a structural factor that
-    is high at object centres and low at offsets. Empirically, centerness
-    is co-monotone with score on the relevant detections: the higher-
-    scored detection in any high-IoU pair also has higher (or equal)
-    centerness — that is the empirical "centerness fakes one-peak"
-    observation. Under this co-monotonicity, the composite score
-    [score * c / K] preserves [Separated]. *)
+(** ** Composite score [score * centerness] preserves the score ordering
+    of any high-IoU pair when [centerness] is co-monotone with [score]
+    on [D]. *)
 
 Theorem centerness_preserves_separation_co_monotone :
   forall (Box : Type) (iou : Box -> Box -> nat)
@@ -2761,13 +2626,7 @@ Proof.
     apply Nat.mul_le_mono; assumption.
 Qed.
 
-(** ** Extraction to OCaml.
-
-    [nms_sorted] and [filter_above] are constructive enough to extract
-    cleanly. With [nat] erased to [int], [bool] kept native, and the
-    list type identified with OCaml's, the extracted module compiles
-    against any OCaml runtime and can be linked into a verified
-    post-processing kernel. *)
+(** ** OCaml extraction. *)
 
 Require Coq.extraction.Extraction.
 Extraction Language OCaml.
@@ -2874,12 +2733,7 @@ Proof.
   apply Hsep; auto. lia.
 Qed.
 
-(** ** Empirical Pareto curve as monotonicity. The keystone
-    [nms_collapse_onepeak] plus [separated_zero_violation_count] give
-    a closed-form Pareto: [Separated 1] implies a zero-gap NMS-free
-    deployment graph. Empirical observations of "stronger recipe →
-    smaller gap" become trivial under this theorem — the gap is zero
-    once [Separated 1] is reached. *)
+(** ** [Separated 1] implies [filter_above (nms_sorted D) = filter_above D]. *)
 
 Theorem pareto_separated_zero_gap :
   forall (Box : Type) (iou : Box -> Box -> nat),
@@ -2896,10 +2750,7 @@ Proof.
   apply (nms_collapse_onepeak iou_sym_h Hnd Hsd Hop Hntc).
 Qed.
 
-(** ** Simplified DETR query-diversity invariant. DETR's
-    "no NMS needed" claim instantiates [Separated] with the box IoU on
-    DETR query outputs; query diversity is the property that distinct
-    queries produce distinguishable boxes. *)
+(** ** Query diversity = [Separated 1]. *)
 
 Definition query_diversity {Box : Type} (iou : Box -> Box -> nat)
                            (tau theta : nat) (D : list (@det Box)) : Prop :=
@@ -2915,11 +2766,8 @@ Proof.
   apply (pareto_separated_zero_gap ibox_iou_sym Hnd Hsd Hqd).
 Qed.
 
-(** ** Recipe-implies-hypothesis as a theorem. Phrased as a
-    fixed-point property: if a training process drives [violation_count]
-    to zero (the empirical observation), the limit point is [Separated].
-    The premise is the empirical claim; the theorem gives the formal
-    consequence. *)
+(** ** [violation_count = 0] implies no above-theta detection has a
+    higher-scored overlapper. *)
 
 Theorem violation_count_zero_implies_no_above_violator :
   forall (Box : Type) (iou : Box -> Box -> nat)
@@ -2941,12 +2789,7 @@ Proof.
   - apply Bool.not_true_is_false. assumption.
 Qed.
 
-(** ** Sequential soft-NMS. Per-element decay applied through
-    earlier kept detections. Under one-peak, no above-[theta] detection
-    has any earlier kept overlapper at IoU >= tau (since they would
-    have higher score, contradicting one-peak), so its score is
-    untouched. Below-[theta] detections can be decayed multiple times
-    but only ever decrease. *)
+(** ** Sequential soft-NMS: per-element decay against earlier kept detections. *)
 
 Section SequentialSoftNMS.
   Variable Box : Type.
@@ -3117,15 +2960,6 @@ Proof.
                                        Feat h dist true_feat obs_feat
                                        L m eps D); assumption.
 Qed.
-
-(** ** Unified-artifact note.
-
-    The empirical pipeline (FCOS training recipe + COCO mAP comparison +
-    NMS-free deployment script) lives in companion repository
-    [certified-perception]. A single [make all] target there builds
-    [nms.v] and runs the COCO eval. The Rocq theorems in this file
-    certify the output set; the empirical recipe demonstrates the
-    invariant holds on a trained head. *)
 
 (** ** Reference greedy NMS algorithm.
 
