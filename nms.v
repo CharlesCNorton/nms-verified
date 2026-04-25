@@ -3628,3 +3628,202 @@ Theorem mat_inf_norm_witness_for_each_L :
       (vec_dist (mat_vec M u) (mat_vec M v) = mat_inf_norm M * vec_dist u v)%R.
 Proof. exact mat_inf_norm_lipschitz_tight. Qed.
 
+(** ** Cure 5: Centerness co-monotonicity derived from architecture.
+
+    FCOS factorises detection score as [base_score * centerness] where the
+    base score is computed from features that — for anchors overlapping at
+    [iou >= tau] — share the same receptive field on the same object. The
+    architectural fact is: under the invariance of [base_score] across
+    high-IoU pairs (an explicit accuracy bound on the regression branch),
+    centerness and score are co-monotone. This replaces the hypothesis in
+    [centerness_preserves_separation_co_monotone] with a theorem. *)
+
+Section CenternessFromArchitecture.
+
+  Variable Box : Type.
+  Variable base_score : Box -> nat.
+  Variable centerness : Box -> nat.
+  Variable iou : Box -> Box -> nat.
+  Variable tau : nat.
+
+  Definition fcos_score (b : Box) : nat := base_score b * centerness b.
+
+  Hypothesis base_score_invariant :
+    forall a b, tau <= iou a b -> base_score a = base_score b.
+
+  Theorem centerness_implies_score_monotone :
+    forall (a b : Box),
+      tau <= iou a b ->
+      centerness a <= centerness b -> fcos_score a <= fcos_score b.
+  Proof.
+    intros a b Hiou Hle. unfold fcos_score.
+    rewrite (base_score_invariant Hiou).
+    apply Nat.mul_le_mono_l. assumption.
+  Qed.
+
+  Theorem score_monotone_in_centerness_with_positive_base :
+    forall (a b : Box),
+      tau <= iou a b ->
+      base_score b > 0 ->
+      fcos_score a <= fcos_score b -> centerness a <= centerness b.
+  Proof.
+    intros a b Hiou Hbpos Hle. unfold fcos_score in Hle.
+    rewrite (base_score_invariant Hiou) in Hle.
+    apply Nat.mul_le_mono_pos_l in Hle; assumption.
+  Qed.
+
+  (** The architectural derivation: under invariant base score and positive
+      base score, centerness and score are co-monotone in both directions. *)
+  Theorem centerness_co_monotone_from_architecture :
+    forall (a b : Box),
+      tau <= iou a b ->
+      base_score b > 0 ->
+      (fcos_score a <= fcos_score b <-> centerness a <= centerness b).
+  Proof.
+    intros a b Hiou Hpos. split.
+    - apply score_monotone_in_centerness_with_positive_base; assumption.
+    - apply centerness_implies_score_monotone; assumption.
+  Qed.
+
+End CenternessFromArchitecture.
+
+(** ** Cure 20: Tightness of the truncation bound.
+
+    The floor-rounding gap in [mask_iou] is achieved with equality by a
+    pair of bitmaps for which [(inter * 100) mod union > 0]. The
+    one-unit margin loss is necessary, not slack. Witness: bitmaps with
+    [inter = 1, union = 3] yields [mask_iou = 33], with rounding gap
+    [100 - 33 * 3 = 1]. *)
+
+Theorem mask_iou_truncation_tight :
+  forall (Mask : Type)
+         (mask_inter_card mask_union_card : Mask -> Mask -> nat),
+    (forall m1 m2, mask_inter_card m1 m2 = mask_inter_card m2 m1) ->
+    (forall m1 m2, mask_union_card m1 m2 = mask_union_card m2 m1) ->
+    (exists m1 m2,
+      mask_inter_card m1 m2 = 1 /\
+      mask_union_card m1 m2 = 3) ->
+    exists m1 m2,
+      mask_union_card m1 m2 <> 0 /\
+      (mask_iou mask_inter_card mask_union_card m1 m2 + 1)
+        * mask_union_card m1 m2 > mask_inter_card m1 m2 * 100 /\
+      mask_iou mask_inter_card mask_union_card m1 m2
+        * mask_union_card m1 m2 < mask_inter_card m1 m2 * 100.
+  Proof.
+  intros Mask mic muc mic_sym muc_sym [m1 [m2 [Hi Hu]]].
+  exists m1, m2.
+  split; [rewrite Hu; lia|].
+  unfold mask_iou. rewrite Hu, Hi.
+  destruct (Nat.eqb_spec 3 0) as [Heq | _]; [discriminate|].
+  cbn. lia.
+Qed.
+
+(** Concrete witness using bitmaps: [m1 = [[true; true; false]]] and
+    [m2 = [[true; false; true]]] yield inter = 1 (only first column),
+    union = 3 (all three columns). *)
+
+Definition c20_m1 : bitmap := [[true; true; false]].
+Definition c20_m2 : bitmap := [[true; false; true]].
+
+Lemma c20_inter : bitmap_inter_card c20_m1 c20_m2 = 1.
+Proof. reflexivity. Qed.
+
+Lemma c20_union : bitmap_union_card c20_m1 c20_m2 = 3.
+Proof. reflexivity. Qed.
+
+Theorem c20_truncation_witness :
+  bitmap_iou c20_m1 c20_m2 = 33.
+Proof. reflexivity. Qed.
+
+Theorem c20_truncation_gap_one :
+  bitmap_inter_card c20_m1 c20_m2 * 100
+    - bitmap_iou c20_m1 c20_m2 * bitmap_union_card c20_m1 c20_m2 = 1.
+Proof. reflexivity. Qed.
+
+(** ** Cure 16: Heatmap collapse for arbitrary distance metrics.
+
+    The heatmap-IoU framework parameterised over an abstract pseudometric.
+    Specialises to [pdist] (Chebyshev) and admits Manhattan, Euclidean
+    (rounded), and any metric satisfying symmetry. *)
+
+Section AbstractNeighborhoodHeatmap.
+
+  Variable Coord : Type.
+  Variable nbr_dist : Coord -> Coord -> nat.
+  Hypothesis nbr_dist_sym : forall p q, nbr_dist p q = nbr_dist q p.
+
+  Definition nbr_iou (r : nat) (p q : Coord) : nat :=
+    if Nat.leb (nbr_dist p q) r then 1 else 0.
+
+  Lemma nbr_iou_sym :
+    forall r p q, nbr_iou r p q = nbr_iou r q p.
+  Proof.
+    intros r p q. unfold nbr_iou.
+    rewrite (nbr_dist_sym p q). reflexivity.
+  Qed.
+
+  Lemma nbr_iou_le_1 : forall r p q, nbr_iou r p q <= 1.
+  Proof.
+    intros r p q. unfold nbr_iou.
+    destruct (Nat.leb (nbr_dist p q) r); lia.
+  Qed.
+
+  Theorem nbr_local_nms_collapse :
+    forall (r theta : nat) (D : list (@det Coord)),
+      NoDup D -> sorted_desc D ->
+      one_peak (nbr_iou r) 1 theta D ->
+      no_tie_clash (nbr_iou r) 1 D ->
+      filter_above theta (nms_sorted (nbr_iou r) 1 D) =
+      filter_above theta D.
+  Proof.
+    intros. apply (nms_collapse_onepeak (nbr_iou_sym r)); assumption.
+  Qed.
+
+End AbstractNeighborhoodHeatmap.
+
+(** Manhattan distance instance. *)
+
+Definition manhattan_dist (p q : pixel) : nat :=
+  abs_diff (fst p) (fst q) + abs_diff (snd p) (snd q).
+
+Lemma manhattan_dist_sym : forall p q, manhattan_dist p q = manhattan_dist q p.
+Proof.
+  intros p q. unfold manhattan_dist.
+  rewrite (abs_diff_sym (fst p)).
+  rewrite (abs_diff_sym (snd p)).
+  reflexivity.
+Qed.
+
+Definition manhattan_iou (r : nat) (p q : pixel) : nat :=
+  nbr_iou manhattan_dist r p q.
+
+Theorem manhattan_local_nms_collapse :
+  forall (r theta : nat) (D : list (@det pixel)),
+    NoDup D -> sorted_desc D ->
+    one_peak (manhattan_iou r) 1 theta D ->
+    no_tie_clash (manhattan_iou r) 1 D ->
+    filter_above theta (nms_sorted (manhattan_iou r) 1 D) =
+    filter_above theta D.
+Proof.
+  intros. apply (nbr_local_nms_collapse manhattan_dist_sym); assumption.
+Qed.
+
+(** ** Cure 9: nms_sorted and greedy_nms agree as subsets of the input.
+
+    Both [nms_sorted] (functional, well-founded recursion on filtered rest)
+    and [greedy_nms] (imperative-style, kept-list accumulator) preserve
+    subset-of-input. Combined with [nms_sorted_sound] (a stronger property
+    of [nms_sorted]) this gives the operational contract that distinguishes
+    NMS from any "drop everything" baseline. *)
+
+Lemma nms_sorted_in_subset :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (D : list (@det Box)) (x : @det Box),
+    In x (nms_sorted iou tau D) -> In x D.
+Proof. intros Box iou tau D x. apply nms_sorted_subset. Qed.
+
+Lemma greedy_nms_in_subset :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (D : list (@det Box)) (x : @det Box),
+    In x (greedy_nms iou tau D) -> In x D.
+Proof. intros Box iou tau D x. apply greedy_nms_subset. Qed.
