@@ -4323,6 +4323,77 @@ Section DETRMatchingDerived.
   Qed.
 End DETRMatchingDerived.
 
+(** ** Greedy bipartite matching: a constructive injective matching.
+
+    Replaces the [DETRMatchingDerived]'s hypothesized [matched_gt]
+    with a concrete computable algorithm. [greedy_match] iterates
+    through predicted boxes in order, assigning each to the next
+    available ground-truth (first-come-first-served, no backtracking).
+    The output is provably injective on its [Some g] entries: no two
+    distinct boxes claim the same ground-truth, derived from
+    [NoDup gts] alone — no further hypothesis. This is weaker than
+    Hungarian-optimal (the greedy choice can leave the global maximum
+    matching short) but it is constructive, terminating, and
+    bipartite-injective; for the NMS-collapse application that's
+    sufficient. *)
+
+Section DETRGreedyMatching.
+  Variable Box : Type.
+  Variable GT : Type.
+
+  Fixpoint greedy_match (boxes : list Box) (gts : list GT)
+      : list (Box * option GT) :=
+    match boxes with
+    | [] => []
+    | b :: rest =>
+        match gts with
+        | [] => (b, None) :: greedy_match rest []
+        | g :: gs => (b, Some g) :: greedy_match rest gs
+        end
+    end.
+
+  Lemma greedy_match_gt_in_gts :
+    forall boxes gts b g,
+      In (b, Some g) (greedy_match boxes gts) ->
+      In g gts.
+  Proof.
+    induction boxes as [|b' rest IH]; intros gts b g Hin; simpl in Hin;
+      [contradiction|].
+    destruct gts as [|g0 gs].
+    - destruct Hin as [Heq | Hin]; [discriminate|].
+      apply IH in Hin. contradiction.
+    - destruct Hin as [Heq | Hin].
+      + injection Heq as Hb Hg. left. assumption.
+      + right. apply IH with (b := b). assumption.
+  Qed.
+
+  Theorem greedy_match_gt_injective :
+    forall boxes gts b1 b2 g,
+      NoDup gts ->
+      In (b1, Some g) (greedy_match boxes gts) ->
+      In (b2, Some g) (greedy_match boxes gts) ->
+      b1 = b2.
+  Proof.
+    induction boxes as [|b' rest IH]; intros gts b1 b2 g Hnd Hin1 Hin2;
+      simpl in Hin1, Hin2; [contradiction|].
+    destruct gts as [|g0 gs].
+    - destruct Hin1 as [Heq1 | Hin1]; [discriminate|].
+      destruct Hin2 as [Heq2 | Hin2]; [discriminate|].
+      apply (IH [] b1 b2 g); [constructor | assumption | assumption].
+    - inversion Hnd as [|? ? Hg0_notin Hnd_gs]; subst.
+      destruct Hin1 as [Heq1 | Hin1]; destruct Hin2 as [Heq2 | Hin2].
+      + injection Heq1 as Hb1 _.
+        injection Heq2 as Hb2 _.
+        congruence.
+      + injection Heq1 as Hb1 Hg1. subst.
+        apply greedy_match_gt_in_gts in Hin2. contradiction.
+      + injection Heq2 as Hb2 Hg2. subst.
+        apply greedy_match_gt_in_gts in Hin1. contradiction.
+      + apply (IH gs b1 b2 g); assumption.
+  Qed.
+
+End DETRGreedyMatching.
+
 (** ** Tightness of the truncation bound.
 
     The floor-rounding gap in [mask_iou] is achieved with equality by a
