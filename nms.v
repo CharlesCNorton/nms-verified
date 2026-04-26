@@ -4252,6 +4252,77 @@ Section CenternessFromArchitecture.
 
 End CenternessFromArchitecture.
 
+(** ** Architectural derivation of [base_score_invariant].
+
+    The previous section took [base_score_invariant] as a [Hypothesis].
+    Here we derive it: model [base_score] as
+    [label_score ∘ matched], where [matched : Box -> option Label]
+    sends each predicted box to its assigned ground-truth label (or
+    [None] for unmatched). The architectural fact that the regression
+    branch's accuracy bound forces high-IoU pairs to share a label
+    is captured by [matched_invariant_under_high_iou] — a smaller,
+    structurally meaningful hypothesis. From it,
+    [derived_base_score_invariant] follows by computation. *)
+
+Section FCOSArchitecturallyDerived.
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Variable tau : nat.
+  Variable Label : Type.
+  Variable matched : Box -> option Label.
+  Variable label_score : Label -> nat.
+
+  Hypothesis matched_invariant_under_high_iou :
+    forall a b, tau <= iou a b -> matched a = matched b.
+
+  Definition derived_base_score (b : Box) : nat :=
+    match matched b with
+    | Some l => label_score l
+    | None => 0
+    end.
+
+  Theorem derived_base_score_invariant :
+    forall a b, tau <= iou a b -> derived_base_score a = derived_base_score b.
+  Proof.
+    intros a b Hiou. unfold derived_base_score.
+    rewrite (matched_invariant_under_high_iou Hiou). reflexivity.
+  Qed.
+End FCOSArchitecturallyDerived.
+
+(** ** Architectural derivation of DETR matching disjointness.
+
+    The hypothesis fed to [detr_post_matching_separated] —
+    [forall a b, a <> b -> iou a b < tau] at the box level — is
+    derived here from an injective bipartite matching with disjoint
+    ground-truth representatives. The matching axiom factors into the
+    smaller, more architectural [matching_injective] and
+    [distinct_gt_disjoint] hypotheses. *)
+
+Section DETRMatchingDerived.
+  Variable Box : Type.
+  Variable GT : Type.
+  Variable gt_eq_dec : forall g1 g2 : GT, {g1 = g2} + {g1 <> g2}.
+  Variable iou : Box -> Box -> nat.
+  Variable tau : nat.
+
+  Variable matched_gt : Box -> GT.
+
+  Hypothesis matching_injective :
+    forall a b, matched_gt a = matched_gt b -> a = b.
+
+  Hypothesis distinct_gt_disjoint :
+    forall a b, matched_gt a <> matched_gt b -> iou a b < tau.
+
+  Theorem detr_matching_pairwise_disjoint :
+    forall a b, a <> b -> iou a b < tau.
+  Proof.
+    intros a b Hne.
+    destruct (gt_eq_dec (matched_gt a) (matched_gt b)) as [Hgeq | Hgne].
+    - exfalso. apply Hne. apply matching_injective. assumption.
+    - apply distinct_gt_disjoint. assumption.
+  Qed.
+End DETRMatchingDerived.
+
 (** ** Tightness of the truncation bound.
 
     The floor-rounding gap in [mask_iou] is achieved with equality by a
