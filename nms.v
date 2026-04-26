@@ -5541,6 +5541,90 @@ Section IterativeTraining.
 
 End IterativeTraining.
 
+(** ** Deterministic generalization: subset preservation.
+
+    Without probability theory in Stdlib, the Rademacher / PAC bound
+    cannot be expressed in its standard form. The constructive
+    surrogate captured here: for any list [T] that is a sublist of a
+    [Separated] list [D], [Separated] is preserved on [T]. Combined
+    with [nms_collapse_onepeak], any sublist of a trained list also
+    enjoys NMS-collapse — a deterministic version of "the trained
+    head generalizes to held-out data drawn from the training
+    distribution."
+
+    The probabilistic version (sample of size [n] yields [Separated]
+    on the test distribution with probability >= 1 − δ at margin
+    [m − O(√(d log n / n) + √(log(1/δ)/n))]) requires Rademacher
+    complexity from a probability theory library and is the missing
+    analytic completion. *)
+
+Theorem Separated_subset :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (tau theta slack : nat) (D T : list (@det Box)),
+    (forall x, In x T -> In x D) ->
+    Separated iou tau theta slack D ->
+    Separated iou tau theta slack T.
+Proof.
+  intros Box iou tau theta slack D T Hsub Hsep d d' Hin Hin' Hne Hiou.
+  apply Hsep; [apply Hsub; assumption | apply Hsub; assumption
+              | assumption | assumption].
+Qed.
+
+Theorem nms_collapse_subset :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau theta : nat) (D T : list (@det Box)),
+      NoDup T -> sorted_desc T ->
+      (forall x, In x T -> In x D) ->
+      Separated iou tau theta 1 D ->
+      filter_above theta (nms_sorted iou tau T) = filter_above theta T.
+Proof.
+  intros Box iou iou_sym_g tau theta D T Hnd Hsd Hsub Hsep.
+  pose proof (@Separated_subset Box iou tau theta 1 D T Hsub Hsep) as Hsep_T.
+  apply (nms_collapse_onepeak iou_sym_g Hnd Hsd
+           (separated_implies_one_peak Hsep_T)
+           (separated_implies_no_tie_clash Hsep_T)).
+Qed.
+
+(** ** Finite-class learning bound.
+
+    The constructive PAC analog: when the hypothesis class is a
+    finite list of [SepRespectingHead]s, exhaustive search via
+    [sep_certify_finite] is complete. If any candidate head certifies
+    [Separated] for the training data at slack [>= 1], the search
+    finds it; if none does, the search returns [None] and the absence
+    is a proof, not a probability. The "sample complexity" is
+    [length cands], a deterministic finite quantity. The trained head
+    then transfers to any sublist of the training set via
+    [Separated_subset]. *)
+
+Theorem finite_class_learning_complete :
+  forall (Box : Type) (iou : Box -> Box -> nat)
+         (iou_sym : forall a b, iou a b = iou b a)
+         (tau theta : nat) (Feat : Type)
+         (box_eq_dec : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (cands : list (SepRespectingHead Feat))
+         (D_train D_test : list (@det Box)) (Sh : SepRespectingHead Feat),
+    NoDup D_test -> sorted_desc D_test ->
+    @sep_certify_finite Box iou tau theta Feat box_eq_dec cands D_train = Some Sh ->
+    1 <= @sep_effective_slack Feat Sh ->
+    (forall x, In x D_test -> In x D_train) ->
+    filter_above theta (nms_sorted iou tau D_test) = filter_above theta D_test.
+Proof.
+  intros Box iou iou_sym_h tau theta Feat box_eq_dec cands D_train D_test Sh
+         Hnd Hsd Hcert Hslack Hsub.
+  apply (@sep_certify_finite_sound Box iou tau theta Feat box_eq_dec
+           cands D_train Sh) in Hcert as [_ Hsep_train].
+  assert (Hsep1 : Separated iou tau theta 1 D_train).
+  { intros d d' Hin Hin' Hne Hiou.
+    specialize (Hsep_train d d' Hin Hin' Hne Hiou).
+    destruct Hsep_train as [[Hgap Hth] | [Hgap Hth]].
+    - left. split; [lia | assumption].
+    - right. split; [lia | assumption]. }
+  apply (@nms_collapse_subset Box iou iou_sym_h tau theta D_train D_test
+           Hnd Hsd Hsub Hsep1).
+Qed.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
