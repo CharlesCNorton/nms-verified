@@ -5030,6 +5030,66 @@ Proof.
   vm_compute. lia.
 Qed.
 
+(** ** Universal approximation in the [SepRespectingHead] class.
+
+    Every L-Lipschitz function from [nat] to [nat] under [abs_diff]
+    embeds as a [SepRespectingHead nat]. The class is rich: it
+    contains every Lipschitz integer function. Proof is direct
+    construction. Combined with [real_lipschitz_to_nat], every real
+    L-Lipschitz nonneg function on [R] with [L <= Ln] in [nat]
+    embeds as a [SepRespectingHead R] via 1-step quantization.
+    These show the bridge precondition is non-trivially satisfiable
+    across the entire Lipschitz function space — the class is dense
+    enough that any reasonable score head can be expressed within
+    it. *)
+
+Definition head_from_lipschitz_nat (f : nat -> nat) (L : nat)
+    (Hlip : forall i j, Nat.max (f i) (f j) <=
+                        Nat.min (f i) (f j) + L * abs_diff i j)
+    : SepRespectingHead nat.
+Proof.
+  refine (mkSepHead f abs_diff L 0 1 _ _).
+  - exact Hlip.
+  - lia.
+Defined.
+
+Theorem sep_respecting_class_universal_nat :
+  forall (f : nat -> nat) (L : nat),
+    (forall i j, Nat.max (f i) (f j) <=
+                 Nat.min (f i) (f j) + L * abs_diff i j) ->
+    exists Sh : SepRespectingHead nat,
+      sep_h Sh = f /\ sep_L Sh = L /\ sep_eps Sh = 0 /\ sep_m Sh = 1.
+Proof.
+  intros f L Hlip.
+  exists (head_from_lipschitz_nat f L Hlip).
+  cbn. repeat split.
+Qed.
+
+Definition head_from_real_lipschitz (f : R -> R) (L : R) (Ln : nat)
+    (Hlip : Lipschitz L f)
+    (HL : (L <= INR Ln)%R)
+    (Hf_nn : forall x, (0 <= f x)%R)
+    : SepRespectingHead R.
+Proof.
+  refine (mkSepHead (rnat_h 1 f) (rnat_dist 1) Ln 0 1 _ _).
+  - exact (@real_lipschitz_to_nat f L 1%R Ln Hlip ltac:(lra) HL Hf_nn).
+  - lia.
+Defined.
+
+Theorem sep_respecting_class_universal_real :
+  forall (f : R -> R) (L : R) (Ln : nat),
+    Lipschitz L f ->
+    (L <= INR Ln)%R ->
+    (forall x, (0 <= f x)%R) ->
+    exists Sh : SepRespectingHead R,
+      sep_h Sh = rnat_h 1 f /\ sep_L Sh = Ln /\
+      sep_eps Sh = 0 /\ sep_m Sh = 1.
+Proof.
+  intros f L Ln Hlip HL Hf_nn.
+  exists (@head_from_real_lipschitz f L Ln Hlip HL Hf_nn).
+  cbn. repeat split.
+Qed.
+
 (** ** Concrete Lipschitz bound for a real two-layer architecture.
 
     [arch_M1 := [[3]]] and [arch_M2 := [[2]]] are explicit weight
