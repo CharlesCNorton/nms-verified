@@ -5315,6 +5315,232 @@ Section ConstructiveTraining.
 
 End ConstructiveTraining.
 
+(** ** Iterative training: constructive coordinate descent.
+
+    Replaces Part VI's "precompute and store" with multi-step
+    dynamics. [train_iter] iteratively removes one detection at a
+    time, picking each round a "loser" — an above-threshold
+    detection with a high-IoU partner whose score is at least as
+    high. The procedure terminates because each step strictly
+    reduces the input list's length. The fixed point has no losers,
+    which yields [one_peak] mechanically; combined with the input's
+    [no_tie_clash], NMS-collapse follows.
+
+    This is the constructive surrogate for SGD on
+    [L_focal + lambda * L_separated]: each "step" is a coordinate
+    update that strictly reduces the violation-count loss; the
+    procedure converges in at most [length D] iterations. The full
+    real-valued SGD analysis with Rademacher generalization remains
+    out of scope for Stdlib alone, but the multi-step convergence
+    structure is captured here without external libraries. *)
+
+Section IterativeTraining.
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Hypothesis iou_sym_i : forall a b, iou a b = iou b a.
+  Variable tau : nat.
+  Variable theta : nat.
+  Variable box_eq_dec_i : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2}.
+
+  Definition det_eq_b (d1 d2 : @det Box) : bool :=
+    if det_eq_dec box_eq_dec_i d1 d2 then true else false.
+
+  Definition has_above_overlapper (D : list (@det Box)) (d : @det Box) : bool :=
+    existsb (fun d' =>
+              andb (negb (det_eq_b d d'))
+                   (andb (Nat.leb tau (iou (box d) (box d')))
+                         (Nat.leb (score d) (score d')))) D.
+
+  Definition find_loser (D : list (@det Box)) : option (@det Box) :=
+    find (fun d =>
+            andb (Nat.leb theta (score d))
+                 (has_above_overlapper D d)) D.
+
+  Fixpoint remove_one (D : list (@det Box)) (target : @det Box)
+      : list (@det Box) :=
+    match D with
+    | [] => []
+    | d :: rest =>
+        if det_eq_dec box_eq_dec_i d target
+        then rest
+        else d :: remove_one rest target
+    end.
+
+  Lemma remove_one_length_decrease :
+    forall D target, In target D -> length (remove_one D target) < length D.
+  Proof.
+    induction D as [|d rest IH]; intros target Hin; simpl in Hin; [contradiction|].
+    simpl.
+    destruct (det_eq_dec box_eq_dec_i d target) as [Heq | Hne]; [simpl; lia|].
+    destruct Hin as [Heq | Hin]; [contradiction|].
+    simpl. specialize (IH target Hin). lia.
+  Qed.
+
+  Lemma find_loser_in_D :
+    forall D v, find_loser D = Some v -> In v D.
+  Proof.
+    intros D v Hf. unfold find_loser in Hf.
+    apply find_some in Hf as [Hin _]. assumption.
+  Qed.
+
+  Lemma remove_one_subset :
+    forall D target x, In x (remove_one D target) -> In x D.
+  Proof.
+    induction D as [|d rest IH]; intros target x Hin; simpl in Hin; [contradiction|].
+    destruct (det_eq_dec box_eq_dec_i d target).
+    - right; assumption.
+    - destruct Hin as [Heq | Hin]; [left; assumption | right; apply IH with target; assumption].
+  Qed.
+
+  Function train_iter (D : list (@det Box)) {measure (@length (@det Box)) D}
+      : list (@det Box) :=
+    match find_loser D with
+    | Some loser => train_iter (remove_one D loser)
+    | None => D
+    end.
+  Proof.
+    intros D loser Heq.
+    apply remove_one_length_decrease.
+    apply find_loser_in_D. assumption.
+  Defined.
+
+  Lemma train_iter_subset :
+    forall D x, In x (train_iter D) -> In x D.
+  Proof.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+    intros x Hin.
+    rewrite train_iter_equation in Hin.
+    destruct (find_loser D) as [loser|] eqn:Eloser; [|assumption].
+    apply find_loser_in_D in Eloser as Hloser_in.
+    pose proof (remove_one_length_decrease D loser Hloser_in) as Hlt.
+    apply IH in Hin; [|exact Hlt].
+    apply remove_one_subset with loser. assumption.
+  Qed.
+
+  Lemma train_iter_no_loser :
+    forall D, find_loser (train_iter D) = None.
+  Proof.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+    rewrite train_iter_equation.
+    destruct (find_loser D) as [loser|] eqn:Eloser.
+    - apply find_loser_in_D in Eloser as Hloser_in.
+      pose proof (remove_one_length_decrease D loser Hloser_in) as Hlt.
+      apply IH. exact Hlt.
+    - assumption.
+  Qed.
+
+  Lemma find_loser_none_no_above_overlapper :
+    forall D d,
+      find_loser D = None ->
+      In d D ->
+      theta <= score d ->
+      has_above_overlapper D d = false.
+  Proof.
+    intros D d Hf Hin Hth.
+    unfold find_loser in Hf.
+    apply (find_none _ _ Hf) in Hin.
+    apply Bool.andb_false_iff in Hin as [Hth' | Hh].
+    - apply Nat.leb_gt in Hth'. lia.
+    - assumption.
+  Qed.
+
+  Theorem train_iter_satisfies_one_peak :
+    forall D, one_peak iou tau theta (train_iter D).
+  Proof.
+    intros D d d' Hin Hin' Hiou Hlt.
+    pose proof (train_iter_no_loser D) as Hno.
+    set (D' := train_iter D) in *.
+    destruct (Nat.leb_spec theta (score d)) as [Hth | Hth]; [|assumption].
+    exfalso.
+    pose proof (find_loser_none_no_above_overlapper D' d Hno Hin Hth) as Hno_overl.
+    unfold has_above_overlapper in Hno_overl.
+    assert (Hex : existsb (fun d'0 =>
+              andb (negb (det_eq_b d d'0))
+                   (andb (Nat.leb tau (iou (box d) (box d'0)))
+                         (Nat.leb (score d) (score d'0)))) D' = true).
+    { apply existsb_exists. exists d'.
+      split; [assumption|].
+      apply Bool.andb_true_iff. split.
+      - apply Bool.negb_true_iff. unfold det_eq_b.
+        destruct (det_eq_dec box_eq_dec_i d d') as [Heq | _].
+        + subst d'. lia.
+        + reflexivity.
+      - apply Bool.andb_true_iff. split.
+        + apply Nat.leb_le. assumption.
+        + apply Nat.leb_le. lia. }
+    rewrite Hex in Hno_overl. discriminate.
+  Qed.
+
+  Lemma remove_one_preserves_NoDup :
+    forall D target, NoDup D -> NoDup (remove_one D target).
+  Proof.
+    induction D as [|d rest IHd]; intros target Hnd; simpl; [constructor|].
+    destruct (det_eq_dec box_eq_dec_i d target).
+    - inversion Hnd; assumption.
+    - inversion Hnd; subst. constructor.
+      + intros Hin. apply remove_one_subset in Hin. contradiction.
+      + apply IHd. assumption.
+  Qed.
+
+  Lemma remove_one_preserves_sorted_desc :
+    forall D target, sorted_desc D -> sorted_desc (remove_one D target).
+  Proof.
+    induction D as [|d rest IHd]; intros target Hsd; simpl; [exact I|].
+    destruct (det_eq_dec box_eq_dec_i d target).
+    - apply (sorted_desc_tail Hsd).
+    - destruct Hsd as [Hbnd Hsd_rest]. simpl. split.
+      + intros d' Hd'. apply remove_one_subset in Hd'. apply Hbnd. assumption.
+      + apply IHd. assumption.
+  Qed.
+
+  Lemma train_iter_preserves_NoDup :
+    forall D, NoDup D -> NoDup (train_iter D).
+  Proof.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+    intros Hnd. rewrite train_iter_equation.
+    destruct (find_loser D) as [loser|] eqn:Eloser; [|assumption].
+    apply IH.
+    - apply remove_one_length_decrease. apply find_loser_in_D. assumption.
+    - apply remove_one_preserves_NoDup. assumption.
+  Qed.
+
+  Lemma train_iter_preserves_sorted_desc :
+    forall D, sorted_desc D -> sorted_desc (train_iter D).
+  Proof.
+    intros D.
+    induction D as [D IH]
+      using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+    intros Hsd. rewrite train_iter_equation.
+    destruct (find_loser D) as [loser|] eqn:Eloser; [|assumption].
+    apply IH.
+    - apply remove_one_length_decrease. apply find_loser_in_D. assumption.
+    - apply remove_one_preserves_sorted_desc. assumption.
+  Qed.
+
+  Theorem train_iter_collapse :
+    forall D, NoDup D -> sorted_desc D -> no_tie_clash iou tau D ->
+      filter_above theta (nms_sorted iou tau (train_iter D))
+      = filter_above theta (train_iter D).
+  Proof.
+    intros D Hnd Hsd Hntc.
+    apply (nms_collapse_onepeak iou_sym_i).
+    - apply train_iter_preserves_NoDup. assumption.
+    - apply train_iter_preserves_sorted_desc. assumption.
+    - apply train_iter_satisfies_one_peak.
+    - intros d d' Hin Hin' Hne Heq.
+      apply train_iter_subset in Hin.
+      apply train_iter_subset in Hin'.
+      apply (Hntc d d' Hin Hin' Hne Heq).
+  Qed.
+
+End IterativeTraining.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
