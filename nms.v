@@ -55,6 +55,7 @@ From Stdlib Require Import Reals.
 From Stdlib Require Import Lra.
 From Stdlib Require Import Arith.Wf_nat.
 From Stdlib Require Import Recdef.
+From Stdlib Require Import ZArith.
 Import ListNotations.
 
 Set Implicit Arguments.
@@ -546,6 +547,171 @@ Proof.
   simpl.
   apply mat_vec_lipschitz.
   rewrite Hlen_u, Hlen_v. reflexivity.
+Qed.
+
+(** ** Quantization adapter. Bridges Real-Lipschitz functions to the
+    nat-Lipschitz hypothesis required by [lipschitz_bridge_substantive].
+    Output quantization uses floor (underestimate); input-distance
+    quantization uses ceiling-via-[up] (overestimate). The output side
+    contributes a one-bit slack; the input side contributes none. *)
+
+Definition quant_R (q r : R) : nat := Z.to_nat (Int_part (r / q)).
+
+Definition quant_R_up (q r : R) : nat := Z.to_nat (up (r / q)).
+
+Lemma quant_R_floor_bound :
+  forall q r,
+    (0 < q)%R -> (0 <= r)%R ->
+    (INR (quant_R q r) * q <= r < (INR (quant_R q r) + 1) * q)%R.
+Proof.
+  intros q r Hq Hr.
+  unfold quant_R.
+  pose proof (base_Int_part (r/q)) as [Hl Hu].
+  assert (Hrq : (0 <= r/q)%R).
+  { unfold Rdiv. apply Rmult_le_pos; [assumption|].
+    left. apply Rinv_0_lt_compat. assumption. }
+  assert (Hint_nn : (0 <= Int_part (r/q))%Z).
+  { unfold Int_part.
+    pose proof (archimed (r/q)) as [Harch1 _].
+    assert (HIZR : (IZR 0 < IZR (up (r/q)))%R) by (simpl; lra).
+    apply lt_IZR in HIZR. lia. }
+  rewrite INR_IZR_INZ.
+  rewrite Z2Nat.id by assumption.
+  split.
+  - apply (Rmult_le_reg_r (/q)).
+    + apply Rinv_0_lt_compat. assumption.
+    + rewrite Rmult_assoc, Rinv_r by lra.
+      rewrite Rmult_1_r. exact Hl.
+  - apply (Rmult_lt_reg_r (/q)).
+    + apply Rinv_0_lt_compat. assumption.
+    + rewrite Rmult_assoc, Rinv_r by lra.
+      rewrite Rmult_1_r. lra.
+Qed.
+
+Lemma quant_R_up_bound :
+  forall q r,
+    (0 < q)%R -> (0 <= r)%R ->
+    (r <= INR (quant_R_up q r) * q)%R.
+Proof.
+  intros q r Hq Hr.
+  unfold quant_R_up.
+  pose proof (archimed (r/q)) as [Hgt _].
+  assert (Hrq : (0 <= r/q)%R).
+  { unfold Rdiv. apply Rmult_le_pos; [assumption|].
+    left. apply Rinv_0_lt_compat. assumption. }
+  assert (Hu_nn : (0 <= up (r/q))%Z).
+  { assert (HIZR : (IZR 0 < IZR (up (r/q)))%R) by (simpl; lra).
+    apply lt_IZR in HIZR. lia. }
+  rewrite INR_IZR_INZ.
+  rewrite Z2Nat.id by assumption.
+  apply (Rmult_le_reg_r (/q)).
+  - apply Rinv_0_lt_compat. assumption.
+  - rewrite Rmult_assoc, Rinv_r by lra.
+    rewrite Rmult_1_r. lra.
+Qed.
+
+(** ** Computation of [quant_R 1] on [INR n]: identity (no quantization
+    needed since q = 1 and INR n is already an integer). *)
+
+Lemma Int_part_IZR_local : forall z, Int_part (IZR z) = z.
+Proof.
+  intros z. symmetry. apply Int_part_spec. lra.
+Qed.
+
+Lemma quant_R_1_INR : forall (n : nat), quant_R 1 (INR n) = n.
+Proof.
+  intros n. unfold quant_R.
+  replace (INR n / 1)%R with (INR n) by (field; lra).
+  rewrite INR_IZR_INZ.
+  rewrite Int_part_IZR_local.
+  apply Nat2Z.id.
+Qed.
+
+(** ** Adapter: a Real L-Lipschitz score head [f] yields a nat L-Lipschitz
+    pair (h, dist) matching [lipschitz_bridge_substantive]'s hypothesis with
+    no additive slack. Output side uses floor (one-bit underestimate); input
+    side uses ceiling-via-[up] (overestimate) which absorbs the bit. *)
+
+Definition rnat_h (q : R) (f : R -> R) (x : R) : nat := quant_R q (f x).
+
+Definition rnat_dist (q : R) (x y : R) : nat :=
+  quant_R_up q (Rabs (x - y)).
+
+Lemma rnat_dist_sym :
+  forall q x y, rnat_dist q x y = rnat_dist q y x.
+Proof.
+  intros q x y. unfold rnat_dist. rewrite Rabs_minus_sym. reflexivity.
+Qed.
+
+Lemma real_lipschitz_to_nat_dir :
+  forall (f : R -> R) (L q : R) (Ln : nat),
+    Lipschitz L f ->
+    (0 < q)%R ->
+    (L <= INR Ln)%R ->
+    (forall x, (0 <= f x)%R) ->
+    forall x y, (rnat_h q f x <= rnat_h q f y + Ln * rnat_dist q x y)%nat.
+Proof.
+  intros f L q Ln Hlip Hq HL_le Hf_nn x y.
+  pose proof (@quant_R_floor_bound q (f x) Hq (Hf_nn x)) as [Hax_lo Hax_hi].
+  pose proof (@quant_R_floor_bound q (f y) Hq (Hf_nn y)) as [Hby_lo Hby_hi].
+  pose proof (@quant_R_up_bound q (Rabs (x - y)) Hq (Rabs_pos _)) as Hd_bnd.
+  pose proof (lip_bound Hlip x y) as Hlip_xy.
+  pose proof (lip_nonneg Hlip) as HL_nn.
+  unfold rnat_h, rnat_dist.
+  set (a := quant_R q (f x)).
+  set (b := quant_R q (f y)).
+  set (d := quant_R_up q (Rabs (x - y))).
+  apply Nat.lt_succ_r. apply INR_lt.
+  rewrite S_INR, plus_INR, mult_INR.
+  assert (Hax : (INR a <= f x / q)%R).
+  { apply Rmult_le_reg_r with (r := q); [exact Hq|].
+    replace (f x / q * q)%R with (f x) by (field; lra).
+    exact Hax_lo. }
+  assert (Hby : (f y / q < INR b + 1)%R).
+  { apply Rmult_lt_reg_r with (r := q); [exact Hq|].
+    replace (f y / q * q)%R with (f y) by (field; lra).
+    exact Hby_hi. }
+  assert (Hd : (Rabs (x - y) / q <= INR d)%R).
+  { apply Rmult_le_reg_r with (r := q); [exact Hq|].
+    replace (Rabs (x - y) / q * q)%R with (Rabs (x - y)) by (field; lra).
+    exact Hd_bnd. }
+  assert (Hchain : ((f x - f y) / q <= INR Ln * INR d)%R).
+  { assert (H1 : ((f x - f y) / q <= Rabs (f x - f y) / q)%R).
+    { apply Rmult_le_compat_r.
+      - left. apply Rinv_0_lt_compat. exact Hq.
+      - apply Rle_abs. }
+    assert (H2 : (Rabs (f x - f y) / q <= L * Rabs (x - y) / q)%R).
+    { apply Rmult_le_compat_r.
+      - left. apply Rinv_0_lt_compat. exact Hq.
+      - exact Hlip_xy. }
+    assert (H3 : (L * Rabs (x - y) / q = L * (Rabs (x - y) / q))%R)
+      by (field; lra).
+    assert (H4 : (L * (Rabs (x - y) / q) <= L * INR d)%R).
+    { apply Rmult_le_compat_l; [exact HL_nn | exact Hd]. }
+    assert (H5 : (L * INR d <= INR Ln * INR d)%R).
+    { apply Rmult_le_compat_r; [apply pos_INR | exact HL_le]. }
+    lra. }
+  assert (Heq : ((f x - f y) / q = f x / q - f y / q)%R) by (field; lra).
+  lra.
+Qed.
+
+Theorem real_lipschitz_to_nat :
+  forall (f : R -> R) (L q : R) (Ln : nat),
+    Lipschitz L f ->
+    (0 < q)%R ->
+    (L <= INR Ln)%R ->
+    (forall x, (0 <= f x)%R) ->
+    forall x y,
+      (Nat.max (rnat_h q f x) (rnat_h q f y) <=
+       Nat.min (rnat_h q f x) (rnat_h q f y) + Ln * rnat_dist q x y)%nat.
+Proof.
+  intros f L q Ln Hlip Hq HL_le Hf_nn x y.
+  pose proof (@real_lipschitz_to_nat_dir f L q Ln Hlip Hq HL_le Hf_nn x y) as Hxy.
+  pose proof (@real_lipschitz_to_nat_dir f L q Ln Hlip Hq HL_le Hf_nn y x) as Hyx.
+  rewrite (rnat_dist_sym q y x) in Hyx.
+  destruct (Nat.le_ge_cases (rnat_h q f x) (rnat_h q f y)) as [Hle | Hge].
+  - rewrite Nat.max_r, Nat.min_l by exact Hle. exact Hyx.
+  - rewrite Nat.max_l, Nat.min_r by exact Hge. exact Hxy.
 Qed.
 
 Local Close Scope R_scope.
@@ -3426,6 +3592,95 @@ Proof.
     destruct Hin as [Heq | [Heq | []]];
       destruct Hin' as [Heq' | [Heq' | []]]; subst;
       try (exfalso; apply Hne; reflexivity); cbn; lia.
+Qed.
+
+(** ** End-to-end weld: Real matrix algebra (Part I) → quantization adapter
+    → bridge → [Separated] (Part II).
+
+    [c30_f x := Rmax 0 (3 * x)] is the score head of a 1×1 matrix [[3]]
+    composed with ReLU. Its 3-Lipschitz property is supplied by
+    [lip_compose lip_relu (lip_mult_left 3)] — every link is from Part I.
+    [real_lipschitz_to_nat] discharges the bridge's nat-Lipschitz hypothesis
+    with no additive slack, and [lipschitz_bridge_substantive] yields
+    [Separated]. The chain Part I → Part II is now closed with concrete
+    real-valued matrix algebra at the source. *)
+
+Local Open Scope R_scope.
+
+Definition c30_f (x : R) : R := Rmax 0 (3 * x).
+
+Lemma c30_f_nonneg : forall x, 0 <= c30_f x.
+Proof. intros x. unfold c30_f. apply Rmax_l. Qed.
+
+Lemma c30_f_lipschitz : Lipschitz 3 c30_f.
+Proof.
+  unfold c30_f.
+  pose proof (lip_compose lip_relu (lip_mult_left 3)) as H.
+  rewrite (Rabs_right 3) in H by lra.
+  rewrite Rmult_1_l in H. exact H.
+Qed.
+
+Local Close Scope R_scope.
+
+(** Compute h on natural-number features. *)
+Lemma c30_h_at : forall n, rnat_h 1 c30_f (INR n) = 3 * n.
+Proof.
+  intros n. unfold rnat_h, c30_f.
+  assert (E3 : INR 3 = 3%R) by (simpl; lra).
+  assert (Hrew : (Rmax 0 (3 * INR n) = INR (3 * n))%R).
+  { rewrite mult_INR. rewrite <- E3.
+    rewrite Rmax_right by (apply Rmult_le_pos; apply pos_INR).
+    reflexivity. }
+  rewrite Hrew.
+  apply quant_R_1_INR.
+Qed.
+
+Lemma c30_dist_self_le_one : forall x, (rnat_dist 1 x x <= 1)%nat.
+Proof.
+  intros x. unfold rnat_dist.
+  replace (x - x)%R with 0%R by lra.
+  rewrite Rabs_R0.
+  unfold quant_R_up.
+  replace (0 / 1)%R with 0%R by (field; lra).
+  pose proof (archimed 0) as [Hgt Hle].
+  assert (Hup0_le : (up 0 <= 1)%Z).
+  { apply le_IZR. simpl. lra. }
+  assert (Hup0_nn : (0 <= up 0)%Z).
+  { apply Z.lt_le_incl. apply lt_IZR. simpl. lra. }
+  apply (Z2Nat.inj_le _ 1 Hup0_nn ltac:(lia)) in Hup0_le.
+  simpl in Hup0_le. exact Hup0_le.
+Qed.
+
+Definition c30_D : list (@det c1_box) :=
+  [mkDet 300 100; mkDet 0 0].
+
+Theorem c30_realmatrix_separated :
+  Separated c1_iou 50 100 2 c30_D.
+Proof.
+  apply (@lipschitz_bridge_substantive c1_box c1_iou 50 100
+           R (rnat_h 1 c30_f) (rnat_dist 1)
+           (fun d => INR (box d)) (fun d => INR (box d))
+           3 8 1 c30_D).
+  - lia.
+  - apply real_lipschitz_to_nat with (L := 3%R) (f := c30_f).
+    + apply c30_f_lipschitz.
+    + lra.
+    + simpl. lra.
+    + apply c30_f_nonneg.
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst d;
+      cbn [score box]; rewrite c30_h_at; reflexivity.
+  - intros d _. apply c30_dist_self_le_one.
+  - intros d d' Hin Hin' Hne Hiou. simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn [box];
+      rewrite !c30_h_at; cbn [Nat.min Nat.max]; lia.
+  - intros d d' Hin Hin' Hne Hiou. simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn [box];
+      rewrite !c30_h_at; cbn [Nat.min]; lia.
 Qed.
 
 (** ** nms_sorted equivalence with imperative greedy_nms.
