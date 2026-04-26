@@ -5090,6 +5090,213 @@ Proof.
   cbn. repeat split.
 Qed.
 
+(** ** Real-valued loss [L_separated] with zero-locus equivalence.
+
+    [pair_violation m d d'] is a nonneg real quantity that is zero
+    iff the pair (d, d') satisfies the [Separated 1] condition at
+    margin [m]: gap [>= m] and lower score [< theta]. The hinge form
+    [Rmax 0 (m − gap) + Rmax 0 (lower − theta + 1)] is the discrete
+    analog of the squared-hinge SGD objective (a square of this would
+    be smooth; the present form is L1-Lipschitz almost everywhere
+    and exactly captures the violation count).
+
+    [L_separated] sums [pair_violation] over the cartesian list of
+    distinct pairs. The headline theorem
+    [L_separated_zero_iff_separated] establishes the zero-locus
+    correspondence: the loss vanishes exactly on lists where
+    [Separated iou tau theta 1] holds. This gives the loss landscape
+    a target — converging the loss to zero is provably equivalent to
+    converging to the [Separated] locus. *)
+
+Local Open Scope R_scope.
+
+Definition pair_violation
+    {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+    (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+    (m : R) (d d' : @det Box) : R :=
+  if det_eq_dec box_eq_dec_l d d' then 0
+  else if Nat.leb tau (iou (box d) (box d')) then
+    let s := INR (score d) in
+    let s' := INR (score d') in
+    let lower := Rmin s s' in
+    let upper := Rmax s s' in
+    Rmax 0 (m - (upper - lower)) + Rmax 0 (lower - INR theta + 1)
+  else 0.
+
+Lemma pair_violation_nonneg :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (m : R) (d d' : @det Box),
+    0 <= pair_violation iou tau theta box_eq_dec_l m d d'.
+Proof.
+  intros Box iou tau theta box_eq_dec_l m d d'.
+  unfold pair_violation.
+  destruct (det_eq_dec box_eq_dec_l d d') as [_ | _]; [apply Rle_refl|].
+  destruct (Nat.leb tau (iou (box d) (box d'))); [|apply Rle_refl].
+  apply Rplus_le_le_0_compat; apply Rmax_l.
+Qed.
+
+Definition L_separated
+    {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+    (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+    (m : R) (D : list (@det Box)) : R :=
+  fold_right Rplus 0
+    (flat_map (fun d =>
+                 map (fun d' =>
+                        pair_violation iou tau theta box_eq_dec_l m d d') D)
+              D).
+
+Lemma fold_right_Rplus_nonneg :
+  forall (l : list R), (forall x, In x l -> 0 <= x) ->
+    0 <= fold_right Rplus 0 l.
+Proof.
+  induction l as [|x rest IH]; intros Hnn; simpl; [apply Rle_refl|].
+  apply Rplus_le_le_0_compat.
+  - apply Hnn. left; reflexivity.
+  - apply IH. intros y Hy. apply Hnn. right; assumption.
+Qed.
+
+Lemma L_separated_nonneg :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (m : R) (D : list (@det Box)),
+    0 <= L_separated iou tau theta box_eq_dec_l m D.
+Proof.
+  intros Box iou tau theta box_eq_dec_l m D.
+  unfold L_separated.
+  apply fold_right_Rplus_nonneg.
+  intros x Hx. apply in_flat_map in Hx as [d [_ Hd]].
+  apply in_map_iff in Hd as [d' [Heq _]]. subst x.
+  apply pair_violation_nonneg.
+Qed.
+
+Lemma fold_right_Rplus_zero_iff :
+  forall (l : list R),
+    (forall x, In x l -> 0 <= x) ->
+    (fold_right Rplus 0 l = 0 <-> forall x, In x l -> x = 0).
+Proof.
+  induction l as [|x rest IH]; intros Hnn; simpl; split.
+  - intros _ y Hy. contradiction.
+  - intros _. reflexivity.
+  - intros Hsum y Hy.
+    assert (Hx_nn : 0 <= x) by (apply Hnn; left; reflexivity).
+    assert (Hrest_nn : forall y, In y rest -> 0 <= y)
+      by (intros z Hz; apply Hnn; right; assumption).
+    pose proof (fold_right_Rplus_nonneg rest Hrest_nn).
+    assert (Hx_eq : x = 0) by lra.
+    assert (Hrest_eq : fold_right Rplus 0 rest = 0) by lra.
+    destruct Hy as [Heq | Hy].
+    + subst y. assumption.
+    + apply (proj1 (IH Hrest_nn) Hrest_eq y Hy).
+  - intros Hall.
+    assert (Hx : x = 0) by (apply Hall; left; reflexivity).
+    assert (Hrest_nn : forall y, In y rest -> 0 <= y)
+      by (intros z Hz; apply Hnn; right; assumption).
+    assert (Hrest : forall y, In y rest -> y = 0)
+      by (intros y Hy; apply Hall; right; assumption).
+    rewrite Hx. rewrite (proj2 (IH Hrest_nn) Hrest). lra.
+Qed.
+
+Local Close Scope R_scope.
+
+Theorem L_separated_zero_iff_separated :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (D : list (@det Box)),
+    (1 <= theta)%nat ->
+    (L_separated iou tau theta box_eq_dec_l 1%R D = 0%R) <->
+    Separated iou tau theta 1 D.
+Proof.
+  intros Box iou tau theta box_eq_dec_l D Hth_pos.
+  unfold L_separated.
+  rewrite fold_right_Rplus_zero_iff.
+  - split.
+    + intros Hall d d' Hin_d Hin_d' Hne Hiou.
+      assert (Hpv : pair_violation iou tau theta box_eq_dec_l 1%R d d' = 0%R).
+      { apply Hall. apply in_flat_map. exists d. split; [assumption|].
+        apply in_map_iff. exists d'. split; [reflexivity|assumption]. }
+      unfold pair_violation in Hpv.
+      destruct (det_eq_dec box_eq_dec_l d d') as [Heq | _]; [contradiction|].
+      apply Nat.leb_le in Hiou as Hle. rewrite Hle in Hpv.
+      set (s := INR (score d)) in *.
+      set (s' := INR (score d')) in *.
+      set (lower := Rmin s s') in *.
+      set (upper := Rmax s s') in *.
+      assert (Hgap : (Rmax 0 (1 - (upper - lower)) = 0)%R /\
+                    (Rmax 0 (lower - INR theta + 1) = 0)%R).
+      { pose proof (Rmax_l 0 (1 - (upper - lower))%R) as H1.
+        pose proof (Rmax_l 0 (lower - INR theta + 1)%R) as H2.
+        split; lra. }
+      destruct Hgap as [Hg1 Hg2].
+      assert (Hg1' : (upper - lower >= 1)%R).
+      { destruct (Rle_dec 0 (1 - (upper - lower))%R) as [Hle' | Hgt'].
+        - rewrite (Rmax_right _ _ Hle') in Hg1. lra.
+        - lra. }
+      assert (Hg2' : (lower < INR theta)%R).
+      { destruct (Rle_dec 0 (lower - INR theta + 1)%R) as [Hle' | Hgt'].
+        - rewrite (Rmax_right _ _ Hle') in Hg2. lra.
+        - lra. }
+      destruct (Rle_lt_dec s s') as [Hss | Hss].
+      * left.
+        assert (Hlow : lower = s) by (apply Rmin_left; assumption).
+        assert (Hup : upper = s') by (apply Rmax_right; assumption).
+        rewrite Hlow in Hg2'. rewrite Hlow, Hup in Hg1'.
+        unfold s, s' in *.
+        split.
+        -- apply INR_le. rewrite plus_INR. simpl. lra.
+        -- apply INR_lt. lra.
+      * right.
+        assert (Hlow : lower = s') by (apply Rmin_right; lra).
+        assert (Hup : upper = s) by (apply Rmax_left; lra).
+        rewrite Hlow in Hg2'. rewrite Hlow, Hup in Hg1'.
+        unfold s, s' in *.
+        split.
+        -- apply INR_le. rewrite plus_INR. simpl. lra.
+        -- apply INR_lt. lra.
+    + intros Hsep x Hx.
+      apply in_flat_map in Hx as [d [Hd Hd_in]].
+      apply in_map_iff in Hd_in as [d' [Heq Hd'_in]]. subst x.
+      unfold pair_violation.
+      destruct (det_eq_dec box_eq_dec_l d d') as [Heq | Hne]; [reflexivity|].
+      destruct (Nat.leb tau (iou (box d) (box d'))) eqn:Eiou; [|reflexivity].
+      apply Nat.leb_le in Eiou.
+      specialize (Hsep d d' Hd Hd'_in Hne Eiou).
+      set (s := INR (score d)) in *.
+      set (s' := INR (score d')) in *.
+      set (lower := Rmin s s') in *.
+      set (upper := Rmax s s') in *.
+      destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+      * assert (Hss : (s <= s')%R) by (apply le_INR; lia).
+        assert (Hgap_R : (s' >= s + 1)%R).
+        { unfold s, s'. rewrite <- (S_INR (score d)).
+          apply Rle_ge, le_INR. lia. }
+        assert (Hth_R : (s + 1 <= INR theta)%R).
+        { unfold s. rewrite <- (S_INR (score d)).
+          apply le_INR. lia. }
+        assert (Hlow : lower = s) by (apply Rmin_left; assumption).
+        assert (Hup : upper = s') by (apply Rmax_right; assumption).
+        rewrite Hlow, Hup.
+        rewrite (Rmax_left 0 (1 - (s' - s)))%R by lra.
+        rewrite (Rmax_left 0 (s - INR theta + 1))%R by lra.
+        lra.
+      * assert (Hss : (s' <= s)%R) by (apply le_INR; lia).
+        assert (Hgap_R : (s >= s' + 1)%R).
+        { unfold s, s'. rewrite <- (S_INR (score d')).
+          apply Rle_ge, le_INR. lia. }
+        assert (Hth_R : (s' + 1 <= INR theta)%R).
+        { unfold s'. rewrite <- (S_INR (score d')).
+          apply le_INR. lia. }
+        assert (Hlow : lower = s') by (apply Rmin_right; assumption).
+        assert (Hup : upper = s) by (apply Rmax_left; assumption).
+        rewrite Hlow, Hup.
+        rewrite (Rmax_left 0 (1 - (s - s')))%R by lra.
+        rewrite (Rmax_left 0 (s' - INR theta + 1))%R by lra.
+        lra.
+  - intros x Hx. apply in_flat_map in Hx as [d [_ Hd]].
+    apply in_map_iff in Hd as [d' [Heq _]]. subst x.
+    apply pair_violation_nonneg.
+Qed.
+
 (** ** Concrete Lipschitz bound for a real two-layer architecture.
 
     [arch_M1 := [[3]]] and [arch_M2 := [[2]]] are explicit weight
