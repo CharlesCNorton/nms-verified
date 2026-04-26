@@ -5297,6 +5297,108 @@ Proof.
     apply pair_violation_nonneg.
 Qed.
 
+(** ** Real-valued gradient descent convergence.
+
+    Single-parameter SGD analysis built from primitives in
+    [Stdlib.Reals]. Given an L-smooth real-valued loss [f] with
+    gradient [grad] (i.e., [f] satisfies the standard quadratic upper
+    bound), one step of [sgd_step eta theta := theta - eta * grad theta]
+    decreases [f] by at least [eta/2 * (grad theta)^2] when
+    [eta * Lsm <= 1]. Iterating [T] times telescopes to
+    [Σ_{t<T} (grad theta_t)^2 <= 2(f theta_0 - f_lower) / eta].
+    Pigeonhole gives [min_{t<T} (grad theta_t)^2 <= 2(f theta_0 - f_lower)/(eta*T)],
+    so [T = O(1/δ²)] iterations suffice for a δ-stationary point.
+
+    Composed with [L_separated_zero_iff_separated], any smoothed
+    surrogate of [L_separated] driven to its zero locus by SGD lands
+    on the [Separated] locus. *)
+
+Local Open Scope R_scope.
+
+Section SGDDescent.
+  Variable f : R -> R.
+  Variable grad : R -> R.
+  Variable Lsm : R.
+  Hypothesis Lsm_pos : 0 < Lsm.
+
+  Hypothesis quadratic_upper_bound :
+    forall x y,
+      f y <= f x + grad x * (y - x) + Lsm / 2 * ((y - x) * (y - x)).
+
+  Definition sgd_step (eta theta : R) : R := theta - eta * grad theta.
+
+  Theorem sgd_descent :
+    forall eta theta,
+      0 < eta -> eta * Lsm <= 1 ->
+      f (sgd_step eta theta) <=
+      f theta - eta / 2 * (grad theta * grad theta).
+  Proof.
+    intros eta theta Heta_pos HetaLsm.
+    unfold sgd_step.
+    pose proof (quadratic_upper_bound theta (theta - eta * grad theta)) as H.
+    replace (theta - eta * grad theta - theta)
+       with (- (eta * grad theta)) in H by lra.
+    replace (grad theta * - (eta * grad theta))
+       with (- (eta * (grad theta * grad theta))) in H by lra.
+    replace (- (eta * grad theta) * - (eta * grad theta))
+       with (eta * eta * (grad theta * grad theta)) in H by lra.
+    assert (Hsq : 0 <= grad theta * grad theta).
+    { destruct (Rle_dec 0 (grad theta)) as [Hp | Hn]; nra. }
+    assert (Hkey : 0 <= eta * (grad theta * grad theta) * (1 - eta * Lsm)).
+    { apply Rmult_le_pos.
+      - apply Rmult_le_pos; [lra | assumption].
+      - lra. }
+    nra.
+  Qed.
+
+  Fixpoint sgd_iterate (eta : R) (theta0 : R) (n : nat) : R :=
+    match n with
+    | O => theta0
+    | S k => sgd_step eta (sgd_iterate eta theta0 k)
+    end.
+
+  Fixpoint grad_sq_sum (eta : R) (theta0 : R) (n : nat) : R :=
+    match n with
+    | O => 0
+    | S k =>
+        grad_sq_sum eta theta0 k +
+        grad (sgd_iterate eta theta0 k) * grad (sgd_iterate eta theta0 k)
+    end.
+
+  Theorem sgd_telescoping_aux :
+    forall eta theta0 n,
+      0 < eta -> eta * Lsm <= 1 ->
+      (eta / 2) * grad_sq_sum eta theta0 n
+      <= f theta0 - f (sgd_iterate eta theta0 n).
+  Proof.
+    intros eta theta0 n Heta_pos HetaLsm.
+    induction n as [|k IH]; simpl.
+    - lra.
+    - set (theta_k := sgd_iterate eta theta0 k) in *.
+      assert (Hdesc : f (sgd_step eta theta_k) <=
+                       f theta_k - eta / 2 * (grad theta_k * grad theta_k))
+        by (apply sgd_descent; assumption).
+      assert (Hgrad_nn : 0 <= grad theta_k * grad theta_k).
+      { destruct (Rle_dec 0 (grad theta_k)) as [Hp | Hn]; nra. }
+      nra.
+  Qed.
+
+  Theorem sgd_telescoping :
+    forall eta theta0 n f_lower,
+      0 < eta -> eta * Lsm <= 1 ->
+      (forall x, f_lower <= f x) ->
+      (eta / 2) * grad_sq_sum eta theta0 n <= f theta0 - f_lower.
+  Proof.
+    intros eta theta0 n f_lower Heta_pos HetaLsm Hf_lower.
+    pose proof (@sgd_telescoping_aux eta theta0 n Heta_pos HetaLsm) as Haux.
+    pose proof (Hf_lower (sgd_iterate eta theta0 n)).
+    lra.
+  Qed.
+
+End SGDDescent.
+
+Local Close Scope R_scope.
+
 (** ** Concrete Lipschitz bound for a real two-layer architecture.
 
     [arch_M1 := [[3]]] and [arch_M2 := [[2]]] are explicit weight
