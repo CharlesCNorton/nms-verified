@@ -3940,6 +3940,93 @@ Proof.
     + apply IH. right. assumption.
 Qed.
 
+Lemma greedy_nms_aux_filter_skip :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (rest : list (@det Box)) (kept : list (@det Box)) (k : @det Box),
+    In k kept ->
+    greedy_nms_aux iou tau kept rest =
+    greedy_nms_aux iou tau kept
+      (filter (fun d => negb (Nat.leb tau (iou (box k) (box d)))) rest).
+Proof.
+  intros Box iou tau rest.
+  induction rest as [|d rs IH]; intros kept k Hk; [reflexivity|].
+  simpl.
+  destruct (Nat.leb tau (iou (box k) (box d))) eqn:Eiou.
+  - simpl.
+    assert (Hex : existsb (fun k0 => Nat.leb tau (iou (box k0) (box d))) kept = true).
+    { apply existsb_exists. exists k. split; [assumption | exact Eiou]. }
+    rewrite Hex.
+    apply (IH kept k Hk).
+  - simpl.
+    destruct (existsb (fun k0 => Nat.leb tau (iou (box k0) (box d))) kept) eqn:Eex.
+    + apply (IH kept k Hk).
+    + apply (IH (d :: kept) k (or_intror Hk)).
+Qed.
+
+Lemma greedy_nms_aux_d_at_bottom :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (rest : list (@det Box)) (kept : list (@det Box)) (d : @det Box),
+    (forall r, In r rest -> iou (box d) (box r) < tau) ->
+    greedy_nms_aux iou tau (kept ++ [d]) rest =
+    d :: greedy_nms_aux iou tau kept rest.
+Proof.
+  intros Box iou tau rest.
+  induction rest as [|r rs IH]; intros kept d Hno; simpl.
+  - rewrite rev_unit. reflexivity.
+  - assert (Hr_low : iou (box d) (box r) < tau) by (apply Hno; left; reflexivity).
+    assert (Hex_eq : existsb (fun k => Nat.leb tau (iou (box k) (box r))) (kept ++ [d])
+                   = existsb (fun k => Nat.leb tau (iou (box k) (box r))) kept).
+    { rewrite existsb_app. simpl.
+      assert (Hleb_false : Nat.leb tau (iou (box d) (box r)) = false)
+        by (apply Nat.leb_gt; assumption).
+      rewrite Hleb_false. rewrite Bool.orb_false_r. reflexivity. }
+    rewrite Hex_eq.
+    destruct (existsb (fun k => Nat.leb tau (iou (box k) (box r))) kept) eqn:Eex.
+    + apply IH. intros r0 Hr0. apply Hno. right; assumption.
+    + assert (Heq : r :: (kept ++ [d]) = (r :: kept) ++ [d]) by reflexivity.
+      rewrite Heq.
+      apply IH. intros r0 Hr0. apply Hno. right; assumption.
+Qed.
+
+Theorem nms_sorted_eq_greedy_nms :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau : nat) (D : list (@det Box)),
+      NoDup D -> sorted_desc D ->
+      nms_sorted iou tau D = greedy_nms iou tau D.
+Proof.
+  intros Box iou iou_sym_h tau D.
+  induction D as [D IH]
+    using (well_founded_ind (well_founded_ltof _ (@length (@det Box)))).
+  intros Hnd Hsd.
+  destruct D as [|d rest].
+  - rewrite nms_sorted_equation. unfold greedy_nms. simpl. reflexivity.
+  - rewrite nms_sorted_equation.
+    unfold greedy_nms. simpl.
+    set (P := fun d' => negb (Nat.leb tau (iou (box d) (box d')))).
+
+    rewrite (@greedy_nms_aux_filter_skip Box iou tau rest [d] d (or_introl eq_refl)).
+    fold P.
+
+    assert (Hno : forall r, In r (filter P rest) -> iou (box d) (box r) < tau).
+    { intros r Hr. apply filter_In in Hr as [_ Hp].
+      unfold P in Hp. apply negb_true_iff in Hp. apply Nat.leb_gt in Hp. assumption. }
+
+    change [d] with ([] ++ [d]).
+    rewrite (@greedy_nms_aux_d_at_bottom Box iou tau (filter P rest) [] d Hno).
+    f_equal.
+
+    assert (Hlt : ltof _ (@length (@det Box)) (filter P rest) (d :: rest)).
+    { unfold ltof. simpl.
+      pose proof (filter_length_le P rest) as HL. lia. }
+    assert (Hnd_filt : NoDup (filter P rest)).
+    { apply NoDup_filter. inversion Hnd; assumption. }
+    assert (Hsd_filt : sorted_desc (filter P rest)).
+    { apply sorted_desc_filter. apply (sorted_desc_tail Hsd). }
+
+    apply (IH (filter P rest) Hlt Hnd_filt Hsd_filt).
+Qed.
+
 (** ** NoDup-free length bound.
 
     Without [NoDup D], the input list may contain syntactically duplicate
