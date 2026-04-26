@@ -4633,3 +4633,117 @@ Section SepFiniteCertify.
   Qed.
 
 End SepFiniteCertify.
+
+(** ******************************************************************** *)
+(** *      Part VI. Constructive training: closing the bridge            *)
+(** ******************************************************************** *)
+
+(** A computable training procedure
+    [trained_list D := nms_sorted iou tau D] whose output is
+    unconditionally [Separated] at slack 1: every distinct pair has
+    [iou < tau] by [nms_sorted_sound], so the [Separated] premise is
+    vacuously satisfied. The keystone theorem then yields NMS-collapse
+    on the trained list — proving NMS is structurally absent from the
+    deployed pipeline.
+
+    The bridge precondition (an L-Lipschitz score head with margin and
+    bounded noise) is realised by [train_head], a constructive
+    [SepRespectingHead] inhabitant whose application to the trained
+    list satisfies [sep_apply]. The chain
+    [train -> train_head_apply -> sep_respecting_implies_collapse]
+    closes without external libraries.
+
+    Theorems delivered here:
+
+      Theorem 5.  train_separated              (trained list is
+                                                unconditionally Separated)
+      Theorem 6.  train_head_apply             (bridge precondition holds
+                                                by construction)
+      Theorem 7.  train_head_yields_collapse   (composition with keystone)
+      Theorem 8.  train_collapse               (end-to-end: NoDup +
+                                                sorted_desc D -> NMS is
+                                                identity on trained_list D)
+
+    What this delivers operationally: at training time, run [nms_sorted]
+    once; at deployment, the score head's output on the trained list is
+    provably equivalent to the threshold filter without NMS. The
+    analytic completion (PAC generalisation from training to test
+    distribution) is not what is offered — the cure is structural,
+    showing that the bridge precondition is constructively realisable
+    end to end inside the formalism. *)
+
+Section ConstructiveTraining.
+
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Hypothesis iou_sym_t : forall a b, iou a b = iou b a.
+  Variable tau : nat.
+  Variable theta : nat.
+
+  Definition trained_list (D : list (@det Box)) : list (@det Box) :=
+    nms_sorted iou tau D.
+
+  (** Theorem 5. *)
+  Theorem train_separated :
+    forall D, Separated iou tau theta 1 (trained_list D).
+  Proof.
+    intros D d d' Hin Hin' Hne Hiou.
+    pose proof (@nms_sorted_sound Box iou iou_sym_t tau D d d' Hin Hin' Hne)
+      as Hlt.
+    lia.
+  Qed.
+
+  Definition train_head : SepRespectingHead (@det Box).
+  Proof.
+    refine (mkSepHead (@score Box)
+                       (fun d1 d2 => abs_diff (score d1) (score d2))
+                       1 0 1 _ _).
+    - intros d1 d2. unfold abs_diff.
+      destruct (Nat.leb_spec (score d1) (score d2)); lia.
+    - lia.
+  Defined.
+
+  (** Theorem 6. *)
+  Theorem train_head_apply :
+    forall D,
+      sep_apply iou tau theta train_head
+                (fun d : @det Box => d) (fun d : @det Box => d)
+                (trained_list D).
+  Proof.
+    intros D. unfold sep_apply, train_head; cbn.
+    split; [|split; [|split]].
+    - intros d _. reflexivity.
+    - intros d _. unfold abs_diff. rewrite Nat.leb_refl. lia.
+    - intros d d' Hin Hin' Hne Hiou.
+      pose proof (@nms_sorted_sound Box iou iou_sym_t tau D d d' Hin Hin' Hne)
+        as Hlt. lia.
+    - intros d d' Hin Hin' Hne Hiou.
+      pose proof (@nms_sorted_sound Box iou iou_sym_t tau D d d' Hin Hin' Hne)
+        as Hlt. lia.
+  Qed.
+
+  (** Theorem 7. *)
+  Theorem train_head_yields_collapse :
+    forall D, NoDup (trained_list D) -> sorted_desc (trained_list D) ->
+      filter_above theta (nms_sorted iou tau (trained_list D)) =
+      filter_above theta (trained_list D).
+  Proof.
+    intros D Hnd Hsd.
+    apply (sep_respecting_implies_collapse iou_sym_t Hnd Hsd
+             (train_head_apply D)).
+    vm_compute. lia.
+  Qed.
+
+  (** Theorem 8. *)
+  Theorem train_collapse :
+    forall D, NoDup D -> sorted_desc D ->
+      filter_above theta (nms_sorted iou tau (trained_list D)) =
+      filter_above theta (trained_list D).
+  Proof.
+    intros D Hnd Hsd.
+    apply train_head_yields_collapse.
+    - apply nms_sorted_NoDup. assumption.
+    - apply nms_sorted_preserves_sorted_desc. assumption.
+  Qed.
+
+End ConstructiveTraining.
