@@ -480,6 +480,243 @@ Proof.
   lra.
 Qed.
 
+(** ** Constructive saturating witness. For every non-empty matrix [M],
+    the pair [u := sign_vec r_max], [v := -sign_vec r_max] (where
+    [r_max] is the row of [M] with maximum row-sum-abs) saturates the
+    operator-norm Lipschitz bound. Quantitative tightness, not merely
+    qualitative existence: the bound equation holds with equality. *)
+
+Definition rsign (r : R) : R := if Rle_dec 0 r then 1 else -1.
+
+Lemma rsign_pm_one : forall r, rsign r = 1 \/ rsign r = -1.
+Proof.
+  intros r. unfold rsign. destruct (Rle_dec 0 r); [left | right]; reflexivity.
+Qed.
+
+Lemma rsign_abs : forall r, Rabs (rsign r) = 1.
+Proof.
+  intros r. destruct (rsign_pm_one r) as [Heq | Heq]; rewrite Heq.
+  - rewrite Rabs_R1. reflexivity.
+  - replace (-1) with (-(1)) by lra. rewrite Rabs_Ropp, Rabs_R1. reflexivity.
+Qed.
+
+Lemma rsign_mul : forall r, r * rsign r = Rabs r.
+Proof.
+  intros r. unfold rsign. destruct (Rle_dec 0 r) as [Hge | Hlt].
+  - rewrite Rmult_1_r, Rabs_right by lra. reflexivity.
+  - assert (Hlt' : r < 0) by lra.
+    rewrite (Rabs_left _ Hlt'). lra.
+Qed.
+
+Fixpoint sign_vec (v : list R) : list R :=
+  match v with
+  | [] => []
+  | x :: rest => rsign x :: sign_vec rest
+  end.
+
+Lemma sign_vec_length : forall v, length (sign_vec v) = length v.
+Proof.
+  induction v as [|x rest IH]; simpl; [reflexivity | rewrite IH; reflexivity].
+Qed.
+
+Lemma sign_vec_pm_one :
+  forall v y, In y (sign_vec v) -> Rabs y = 1.
+Proof.
+  induction v as [|x rest IH]; intros y Hin; simpl in Hin; [contradiction|].
+  destruct Hin as [Heq | Hin].
+  - subst. apply rsign_abs.
+  - apply IH. assumption.
+Qed.
+
+Definition neg_sign_vec (v : list R) : list R := map Ropp (sign_vec v).
+
+Lemma neg_sign_vec_length : forall v, length (neg_sign_vec v) = length v.
+Proof.
+  intros v. unfold neg_sign_vec. rewrite length_map. apply sign_vec_length.
+Qed.
+
+Lemma dot_self_sign : forall r, dot r (sign_vec r) = row_sum_abs r.
+Proof.
+  induction r as [|x rest IH]; simpl; [reflexivity|].
+  rewrite IH. rewrite rsign_mul. reflexivity.
+Qed.
+
+Lemma dot_other_pm_one_bound :
+  forall r u,
+    (forall y, In y u -> Rabs y = 1) ->
+    Rabs (dot r u) <= row_sum_abs r.
+Proof.
+  induction r as [|x rest IH]; intros u Hu; simpl.
+  - rewrite Rabs_R0. apply Rle_refl.
+  - destruct u as [|y vs]; simpl.
+    + rewrite Rabs_R0.
+      pose proof (row_sum_abs_nonneg rest). pose proof (Rabs_pos x). lra.
+    + eapply Rle_trans; [apply Rabs_triang|].
+      rewrite Rabs_mult.
+      assert (Hy : Rabs y = 1) by (apply Hu; left; reflexivity).
+      rewrite Hy, Rmult_1_r.
+      apply Rplus_le_compat_l.
+      apply IH. intros z Hz. apply Hu. right. assumption.
+Qed.
+
+Lemma vec_sub_sign_neg_sign :
+  forall l, vec_sub (sign_vec l) (neg_sign_vec l) = map (fun y => 2 * y) (sign_vec l).
+Proof.
+  induction l as [|x rest IH]; simpl; [reflexivity|].
+  unfold neg_sign_vec in *. simpl.
+  rewrite IH. f_equal. lra.
+Qed.
+
+Lemma dot_scale_v :
+  forall row v c, dot row (map (fun y => c * y) v) = c * dot row v.
+Proof.
+  induction row as [|x rs IH]; intros v c; simpl.
+  - lra.
+  - destruct v as [|y vs]; simpl.
+    + lra.
+    + rewrite IH. lra.
+Qed.
+
+Lemma vec_inf_scale_nonneg :
+  forall c l, 0 <= c -> vec_inf (map (fun y => c * y) l) = c * vec_inf l.
+Proof.
+  intros c l Hc. induction l as [|x rest IH]; simpl.
+  - lra.
+  - rewrite IH.
+    rewrite Rabs_mult, (Rabs_right c) by lra.
+    apply RmaxRmult. assumption.
+Qed.
+
+Fixpoint find_max_row (M : matrix) : list R :=
+  match M with
+  | [] => []
+  | r :: rest =>
+      let r' := find_max_row rest in
+      if Rle_dec (row_sum_abs r') (row_sum_abs r) then r else r'
+  end.
+
+Lemma find_max_row_max :
+  forall M r, In r M -> row_sum_abs r <= row_sum_abs (find_max_row M).
+Proof.
+  induction M as [|r0 rest IH]; intros r Hin; simpl in *; [contradiction|].
+  destruct (Rle_dec (row_sum_abs (find_max_row rest)) (row_sum_abs r0))
+    as [Hle | Hgt].
+  - destruct Hin as [Heq | Hin].
+    + subst. apply Rle_refl.
+    + specialize (IH _ Hin). lra.
+  - destruct Hin as [Heq | Hin].
+    + subst. lra.
+    + apply IH. assumption.
+Qed.
+
+Lemma find_max_row_in :
+  forall M, M <> [] -> In (find_max_row M) M.
+Proof.
+  induction M as [|r0 rest IH]; intros Hne; [contradiction|].
+  simpl.
+  destruct (Rle_dec (row_sum_abs (find_max_row rest)) (row_sum_abs r0))
+    as [Hle | Hgt].
+  - left; reflexivity.
+  - right. apply IH.
+    intros Hempty. subst rest. simpl in Hgt.
+    pose proof (row_sum_abs_nonneg r0). lra.
+Qed.
+
+Lemma find_max_row_eq_inf_norm :
+  forall M, M <> [] -> row_sum_abs (find_max_row M) = mat_inf_norm M.
+Proof.
+  induction M as [|r0 rest IH]; intros Hne; [contradiction|].
+  simpl.
+  destruct rest as [|r1 rest'].
+  - simpl. simpl in *.
+    pose proof (row_sum_abs_nonneg r0).
+    destruct (Rle_dec 0 (row_sum_abs r0)) as [_ | Hbad]; [|lra].
+    rewrite Rmax_left by lra. reflexivity.
+  - assert (Hne' : r1 :: rest' <> []) by discriminate.
+    specialize (IH Hne').
+    destruct (Rle_dec (row_sum_abs (find_max_row (r1 :: rest')))
+                      (row_sum_abs r0)) as [Hle | Hgt].
+    + rewrite Rmax_left by (rewrite <- IH; assumption). reflexivity.
+    + rewrite Rmax_right by (rewrite <- IH; lra). exact IH.
+Qed.
+
+Lemma vec_inf_max_achieved :
+  forall (l : list R) (K : R),
+    0 <= K ->
+    (forall x, In x l -> Rabs x <= K) ->
+    (exists x, In x l /\ Rabs x = K) ->
+    vec_inf l = K.
+Proof.
+  intros l K HK Hbound [x [Hin Heq]].
+  apply Rle_antisym.
+  - apply vec_inf_bound; assumption.
+  - rewrite <- Heq. apply vec_inf_in. assumption.
+Qed.
+
+Theorem mat_inf_norm_lipschitz_saturated :
+  forall M : matrix,
+    M <> [] ->
+    vec_dist (mat_vec M (sign_vec (find_max_row M)))
+             (mat_vec M (neg_sign_vec (find_max_row M)))
+    = mat_inf_norm M * vec_dist (sign_vec (find_max_row M))
+                                 (neg_sign_vec (find_max_row M)).
+Proof.
+  intros M Hne.
+  destruct (find_max_row M) as [|x0 rs] eqn:Erm.
+  - cbn [sign_vec map].
+    unfold neg_sign_vec. cbn [sign_vec map].
+    rewrite (vec_dist_refl (mat_vec M [])).
+    rewrite (vec_dist_refl (@nil R)).
+    lra.
+  - set (rm := x0 :: rs).
+    assert (Huv_len : length (sign_vec rm) = length (neg_sign_vec rm)).
+    { rewrite sign_vec_length, neg_sign_vec_length. reflexivity. }
+    assert (Hmn : row_sum_abs rm = mat_inf_norm M).
+    { unfold rm. rewrite <- Erm. apply find_max_row_eq_inf_norm. assumption. }
+    assert (Hmn_nn : 0 <= mat_inf_norm M) by apply mat_inf_norm_nonneg.
+    assert (Hsv_eq : vec_inf (sign_vec rm) = 1).
+    { unfold rm. cbn [sign_vec].
+      apply Rle_antisym.
+      - apply Rmax_lub.
+        + rewrite rsign_abs. apply Rle_refl.
+        + apply vec_inf_bound; [lra|].
+          intros y Hy. rewrite (sign_vec_pm_one rs y Hy). apply Rle_refl.
+      - rewrite <- (rsign_abs x0).
+        apply vec_inf_in. simpl. left; reflexivity. }
+    assert (Hvdist_uv : vec_dist (sign_vec rm) (neg_sign_vec rm) = 2).
+    { unfold vec_dist.
+      rewrite vec_sub_sign_neg_sign.
+      rewrite vec_inf_scale_nonneg by lra.
+      rewrite Hsv_eq. lra. }
+    rewrite Hvdist_uv.
+    unfold vec_dist at 1.
+    rewrite (mat_vec_sub_componentwise_eqlen M _ _ Huv_len).
+    rewrite vec_sub_sign_neg_sign.
+    rewrite (map_ext (fun row => dot row (map (fun y => 2 * y) (sign_vec rm)))
+                     (fun row => 2 * dot row (sign_vec rm)))
+      by (intros; apply dot_scale_v).
+    rewrite <- map_map with (f := fun row => dot row (sign_vec rm))
+                            (g := fun y => 2 * y).
+    rewrite vec_inf_scale_nonneg by lra.
+    rewrite (Rmult_comm (mat_inf_norm M) 2).
+    apply Rmult_eq_compat_l.
+    apply vec_inf_max_achieved; [assumption | |].
+    + intros x Hin.
+      apply in_map_iff in Hin as [row [Heq Hrow_in]]. subst x.
+      pose proof (dot_other_pm_one_bound row (sign_vec rm)
+                    (sign_vec_pm_one rm)) as Hb.
+      pose proof (find_max_row_max M row Hrow_in) as Hrow_le.
+      rewrite Erm in Hrow_le. fold rm in Hrow_le.
+      rewrite Hmn in Hrow_le.
+      lra.
+    + exists (dot rm (sign_vec rm)).
+      split.
+      * apply in_map_iff. exists rm. split; [reflexivity|].
+        unfold rm. rewrite <- Erm. apply find_max_row_in. assumption.
+      * rewrite dot_self_sign. rewrite Hmn.
+        apply Rabs_pos_eq. assumption.
+Qed.
+
 Lemma mat_vec_length :
   forall M v, length (mat_vec M v) = length M.
 Proof.
