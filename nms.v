@@ -5397,6 +5397,129 @@ Section SGDDescent.
 
 End SGDDescent.
 
+(** ** Probabilistic concentration on finite uniform samples.
+
+    Foundational ingredients for the PAC bound built directly from
+    [Stdlib.Reals]: a finite probability space (the uniform measure
+    on a list of samples), expectation, and Markov's inequality. The
+    Bonferroni union bound composes Markov over a finite hypothesis
+    class to give a uniform-deviation guarantee. Composed with
+    [L_separated_zero_iff_separated], the empirical loss is a
+    [P]-bounded estimate of the population loss; convergence to zero
+    on a sufficiently large sample gives [Separated] on the population
+    via the union-bound chaining. *)
+
+Definition prob_uniform (samples : list R) (event : R -> bool) : R :=
+  if Nat.eqb (length samples) 0 then 0
+  else INR (length (filter event samples)) / INR (length samples).
+
+Definition expect_uniform (samples : list R) : R :=
+  if Nat.eqb (length samples) 0 then 0
+  else fold_right Rplus 0 samples / INR (length samples).
+
+Lemma sum_filter_ge_threshold :
+  forall (l : list R) (a : R),
+    (forall x, In x l -> 0 <= x) ->
+    a * INR (length (filter (fun x => if Rle_dec a x then true else false) l))
+    <= fold_right Rplus 0 l.
+Proof.
+  induction l as [|x rest IH]; intros a Hnn; simpl; [lra|].
+  assert (Hx_nn : 0 <= x) by (apply Hnn; left; reflexivity).
+  assert (Hrest_nn : forall y, In y rest -> 0 <= y)
+    by (intros y Hy; apply Hnn; right; assumption).
+  specialize (IH a Hrest_nn).
+  destruct (Rle_dec a x) as [Hge | Hlt].
+  - cbn [filter length].
+    destruct (Rle_dec a x) as [_ | Hlt']; [|contradiction].
+    rewrite S_INR. nra.
+  - cbn [filter length].
+    destruct (Rle_dec a x) as [Hge' | _]; [contradiction|].
+    lra.
+Qed.
+
+Theorem markov_finite_uniform :
+  forall samples a,
+    0 < a ->
+    (forall x, In x samples -> 0 <= x) ->
+    a *
+    prob_uniform samples (fun x => if Rle_dec a x then true else false)
+    <= expect_uniform samples.
+Proof.
+  intros samples a Ha Hnn.
+  unfold prob_uniform, expect_uniform.
+  destruct (Nat.eqb_spec (length samples) 0) as [Hzero | Hpos]; [lra|].
+  assert (Hlen_pos : 0 < INR (length samples)).
+  { destruct (length samples) eqn:E; [contradiction|].
+    apply lt_0_INR. lia. }
+  pose proof (sum_filter_ge_threshold samples a Hnn) as Hbnd.
+  assert (Hinv_pos : 0 < / INR (length samples))
+    by (apply Rinv_0_lt_compat; assumption).
+  apply Rmult_le_reg_r with (INR (length samples)); [assumption|].
+  replace
+    (a *
+     (INR
+        (length
+           (filter (fun x => if Rle_dec a x then true else false) samples)) /
+      INR (length samples)) * INR (length samples))
+    with
+    (a *
+     INR
+       (length
+          (filter (fun x => if Rle_dec a x then true else false) samples)))
+    by (field; lra).
+  replace
+    (fold_right Rplus 0 samples / INR (length samples) * INR (length samples))
+    with (fold_right Rplus 0 samples) by (field; lra).
+  exact Hbnd.
+Qed.
+
+(** ** Bonferroni / union bound over a finite hypothesis class.
+
+    For any list of events, the probability of their disjunction is
+    bounded by the sum of individual probabilities. Composing with
+    Markov gives the standard uniform-deviation bound: for a class of
+    size M, the chance of any one estimator deviating by [eps] is at
+    most M times the per-estimator Markov bound. This is the
+    chaining step for the PAC bound on the empirical loss. *)
+
+Lemma length_filter_or_le :
+  forall (l : list R) (P Q : R -> bool),
+    (length (filter (fun x => orb (P x) (Q x)) l) <=
+     length (filter P l) + length (filter Q l))%nat.
+Proof.
+  induction l as [|x rest IH]; intros P Q; simpl; [lia|].
+  destruct (P x) eqn:EP; destruct (Q x) eqn:EQ; simpl;
+    specialize (IH P Q); lia.
+Qed.
+
+Theorem bonferroni_two :
+  forall samples (P Q : R -> bool),
+    prob_uniform samples (fun x => orb (P x) (Q x)) <=
+    prob_uniform samples P + prob_uniform samples Q.
+Proof.
+  intros samples P Q. unfold prob_uniform.
+  destruct (Nat.eqb_spec (length samples) 0) as [Hzero | Hpos]; [lra|].
+  assert (Hlen_pos : 0 < INR (length samples)).
+  { destruct (length samples) eqn:E; [contradiction|].
+    apply lt_0_INR. lia. }
+  pose proof (length_filter_or_le samples P Q) as Hle.
+  apply Rmult_le_reg_r with (INR (length samples)); [assumption|].
+  replace
+    (INR (length (filter (fun x => orb (P x) (Q x)) samples)) /
+     INR (length samples) * INR (length samples))
+    with (INR (length (filter (fun x => orb (P x) (Q x)) samples)))
+    by (field; lra).
+  replace
+    ((INR (length (filter P samples)) / INR (length samples) +
+      INR (length (filter Q samples)) / INR (length samples)) *
+     INR (length samples))
+    with
+    (INR (length (filter P samples)) + INR (length (filter Q samples)))
+    by (field; lra).
+  rewrite <- plus_INR.
+  apply le_INR. assumption.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ** Concrete Lipschitz bound for a real two-layer architecture.
