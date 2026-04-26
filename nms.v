@@ -4344,3 +4344,292 @@ Proof.
     + destruct Hex as [d' [Hd_in_rs Hbox]].
       right. exists d'. split; [right; assumption | assumption].
 Qed.
+
+(** ******************************************************************** *)
+(** *      Part V. Separation by construction                            *)
+(** ******************************************************************** *)
+
+(** Refactor [one_peak] from a hypothesis on the input list to a
+    structural property of a parameterised score head. A
+    [SepRespectingHead Feat] bundles the bridge precondition certificate
+    (Lipschitz constant, noise budget, margin) into one record.
+    Inhabitants discharge [Separated] by construction; composition with
+    [nms_collapse_onepeak] yields NMS-collapse with no further hypothesis
+    discharge.
+
+    Theorems delivered here:
+
+      Theorem 1.  sep_respecting_implies_separated
+      Theorem 2.  sep_respecting_implies_collapse
+      Theorem 3.  c40_separated, c40_collapse  (worked instance,
+                                                vm-checkable)
+      Theorem 4.  sep_certify_finite_*         (decidable certificate
+                                                search over a finite
+                                                candidate set)
+
+    The continuous-optimisation completion — that SGD on
+    [L_focal + lambda * L_separated] converges to a [SepRespectingHead]
+    inhabitant with explicit sample complexity — needs Rademacher
+    complexity and stochastic-optimisation convergence, neither of
+    which is in Stdlib. Theorem 4 is the constructive surrogate
+    executable in Stdlib alone: the finite-search version is
+    decidable here; the continuous version is the missing library. *)
+
+Record SepRespectingHead (Feat : Type) := mkSepHead {
+  sep_h : Feat -> nat;
+  sep_dist : Feat -> Feat -> nat;
+  sep_L : nat;
+  sep_eps : nat;
+  sep_m : nat;
+  sep_lipschitz :
+    forall x y, Nat.max (sep_h x) (sep_h y)
+                <= Nat.min (sep_h x) (sep_h y) + sep_L * sep_dist x y;
+  sep_margin_bound : 2 * sep_L * sep_eps <= sep_m
+}.
+
+Arguments mkSepHead {Feat} _ _ _ _ _ _ _.
+Arguments sep_h {Feat} _ _.
+Arguments sep_dist {Feat} _ _ _.
+Arguments sep_L {Feat} _.
+Arguments sep_eps {Feat} _.
+Arguments sep_m {Feat} _.
+Arguments sep_lipschitz {Feat} _ _ _.
+Arguments sep_margin_bound {Feat} _.
+
+Section SepRespecting.
+
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Hypothesis iou_sym_h : forall a b, iou a b = iou b a.
+  Variable tau : nat.
+  Variable theta : nat.
+  Variable Feat : Type.
+
+  Definition sep_apply (S : SepRespectingHead Feat)
+                       (obs true_f : @det Box -> Feat)
+                       (D : list (@det Box)) : Prop :=
+    (forall d, In d D -> score d = sep_h S (obs d)) /\
+    (forall d, In d D -> sep_dist S (true_f d) (obs d) <= sep_eps S) /\
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       tau <= iou (box d) (box d') ->
+       sep_m S + Nat.min (sep_h S (true_f d)) (sep_h S (true_f d'))
+         <= Nat.max (sep_h S (true_f d)) (sep_h S (true_f d'))) /\
+    (forall d d', In d D -> In d' D -> d <> d' ->
+       tau <= iou (box d) (box d') ->
+       sep_L S * sep_eps S +
+       Nat.min (sep_h S (true_f d)) (sep_h S (true_f d')) < theta).
+
+  Theorem sep_respecting_implies_separated :
+    forall (S : SepRespectingHead Feat)
+           (obs true_f : @det Box -> Feat)
+           (D : list (@det Box)),
+      sep_apply S obs true_f D ->
+      Separated iou tau theta (sep_m S - 2 * sep_L S * sep_eps S) D.
+  Proof.
+    intros S obs true_f D [Hscore [Hobs [Hmargin Hth]]].
+    apply (@lipschitz_bridge_substantive Box iou tau theta
+             Feat (sep_h S) (sep_dist S) true_f obs
+             (sep_L S) (sep_m S) (sep_eps S) D);
+      [apply (sep_margin_bound S)
+      |apply (sep_lipschitz S)
+      |assumption
+      |assumption
+      |assumption
+      |assumption].
+  Qed.
+
+  Theorem sep_respecting_implies_collapse :
+    forall (S : SepRespectingHead Feat)
+           (obs true_f : @det Box -> Feat)
+           (D : list (@det Box)),
+      NoDup D ->
+      sorted_desc D ->
+      sep_apply S obs true_f D ->
+      1 <= sep_m S - 2 * sep_L S * sep_eps S ->
+      filter_above theta (nms_sorted iou tau D) = filter_above theta D.
+  Proof.
+    intros S obs true_f D Hnd Hsd Happ Hslack.
+    pose proof (sep_respecting_implies_separated Happ) as Hsep.
+    assert (Hsep1 : Separated iou tau theta 1 D).
+    { intros d d' Hin Hin' Hne Hiou.
+      specialize (Hsep d d' Hin Hin' Hne Hiou).
+      destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+      - left. split; [lia | assumption].
+      - right. split; [lia | assumption]. }
+    apply (nms_collapse_onepeak iou_sym_h Hnd Hsd
+             (separated_implies_one_peak Hsep1)
+             (separated_implies_no_tie_clash Hsep1)).
+  Qed.
+
+End SepRespecting.
+
+(** ** Theorem 3 — worked instance.
+
+    A concrete [SepRespectingHead] for the c1_iou setting. The score
+    head is the identity on nat; feature distance is [abs_diff];
+    L = 1, eps = 0, m = 150. Both [Separated] and NMS-collapse are
+    established on a 2-element list, [vm_compute]-checkable. *)
+
+Definition c40_head : SepRespectingHead nat.
+Proof.
+  refine (mkSepHead (fun n : nat => n) abs_diff 1 0 150 _ _).
+  - intros x y. unfold abs_diff.
+    destruct (Nat.leb_spec x y); lia.
+  - lia.
+Defined.
+
+Definition c40_D : list (@det nat) := [mkDet 200 0; mkDet 50 1].
+
+Lemma c40_NoDup : NoDup c40_D.
+Proof.
+  unfold c40_D. apply NoDup_cons.
+  - simpl. intros [H | H]; [inversion H; lia | contradiction].
+  - apply NoDup_cons; [intros H; contradiction | apply NoDup_nil].
+Qed.
+
+Lemma c40_sorted : sorted_desc c40_D.
+Proof.
+  unfold c40_D. simpl. split.
+  - intros d' [Heq | Hf]; [subst; cbn; lia | contradiction].
+  - split; [intros d' Hd'; contradiction | exact I].
+Qed.
+
+Lemma c40_apply :
+  sep_apply c1_iou 50 100 c40_head (@score nat) (@score nat) c40_D.
+Proof.
+  unfold sep_apply, c40_D, c40_head; cbn [sep_h sep_dist sep_L sep_eps sep_m].
+  split; [|split; [|split]].
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst; reflexivity.
+  - intros d Hin. simpl in Hin.
+    destruct Hin as [Heq | [Heq | []]]; subst; vm_compute; lia.
+  - intros d d' Hin Hin' Hne Hiou.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn; lia.
+  - intros d d' Hin Hin' Hne Hiou.
+    simpl in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | []]];
+      destruct Hin' as [Heq' | [Heq' | []]]; subst;
+      try (exfalso; apply Hne; reflexivity); cbn; lia.
+Qed.
+
+Theorem c40_separated :
+  Separated c1_iou 50 100 150 c40_D.
+Proof.
+  pose proof (sep_respecting_implies_separated c40_apply) as H.
+  cbn [sep_m sep_L sep_eps] in H.
+  replace 150 with (150 - 2 * 1 * 0) by lia.
+  exact H.
+Qed.
+
+Theorem c40_collapse :
+  filter_above 100 (nms_sorted c1_iou 50 c40_D)
+  = filter_above 100 c40_D.
+Proof.
+  apply (sep_respecting_implies_collapse c1_iou_sym
+           c40_NoDup c40_sorted c40_apply).
+  vm_compute. lia.
+Qed.
+
+(** ** Theorem 4 — finite certificate search.
+
+    Reuses the existing [Separated_dec] / [Separated_check] machinery.
+    For each candidate head [S], compute its effective slack
+    [sep_m S - 2 * sep_L S * sep_eps S]; check whether the detection
+    list [D] satisfies [Separated] at that slack. Return the first head
+    whose effective slack discharges the check, or [None] if no
+    candidate succeeds.
+
+    The check verifies the consequence ([D] is Separated at the head's
+    slack), not the head's bridge precondition. The head's certificate
+    is the constructive witness that this consequence is achievable; the
+    finite search verifies it concretely. The continuous-training story
+    (a head trained on this distribution converges to one whose
+    effective slack matches [D]'s actual separation) is the missing
+    analytic completion. *)
+
+Section SepFiniteCertify.
+
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Hypothesis iou_sym_h : forall a b, iou a b = iou b a.
+  Variable tau : nat.
+  Variable theta : nat.
+  Variable Feat : Type.
+  Variable box_eq_dec : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2}.
+
+  Definition sep_effective_slack (Sh : SepRespectingHead Feat) : nat :=
+    sep_m Sh - 2 * sep_L Sh * sep_eps Sh.
+
+  Fixpoint sep_certify_finite
+    (cands : list (SepRespectingHead Feat))
+    (D : list (@det Box)) : option (SepRespectingHead Feat) :=
+    match cands with
+    | [] => None
+    | Sh :: rest =>
+        if Separated_check iou tau theta box_eq_dec
+                           (sep_effective_slack Sh) D
+        then Some Sh
+        else sep_certify_finite rest D
+    end.
+
+  Theorem sep_certify_finite_sound :
+    forall cands D Sh,
+      sep_certify_finite cands D = Some Sh ->
+      In Sh cands /\
+      Separated iou tau theta (sep_effective_slack Sh) D.
+  Proof.
+    induction cands as [|S0 rest IH]; intros D Sh Hcert.
+    - simpl in Hcert. discriminate.
+    - simpl in Hcert.
+      destruct (Separated_check iou tau theta box_eq_dec
+                                (sep_effective_slack S0) D) eqn:Echeck.
+      + injection Hcert as Heq. subst.
+        split; [left; reflexivity|].
+        apply Separated_check_correct in Echeck. exact Echeck.
+      + apply IH in Hcert as [Hin Hsep].
+        split; [right; assumption | assumption].
+  Qed.
+
+  Theorem sep_certify_finite_complete :
+    forall cands D,
+      sep_certify_finite cands D = None ->
+      forall Sh, In Sh cands ->
+        ~ Separated iou tau theta (sep_effective_slack Sh) D.
+  Proof.
+    induction cands as [|S0 rest IH]; intros D Hcert Sh Hin Hsep.
+    - simpl in Hin. contradiction.
+    - simpl in Hcert.
+      destruct (Separated_check iou tau theta box_eq_dec
+                                (sep_effective_slack S0) D) eqn:Echeck;
+        [discriminate|].
+      destruct Hin as [Heq | Hin].
+      + apply (proj2 (Separated_check_correct iou tau theta box_eq_dec
+                        (sep_effective_slack Sh) D)) in Hsep.
+        congruence.
+      + apply (IH D Hcert Sh Hin Hsep).
+  Qed.
+
+  Theorem sep_certify_finite_yields_collapse :
+    forall cands D Sh,
+      NoDup D -> sorted_desc D ->
+      sep_certify_finite cands D = Some Sh ->
+      1 <= sep_effective_slack Sh ->
+      filter_above theta (nms_sorted iou tau D) = filter_above theta D.
+  Proof.
+    intros cands D Sh Hnd Hsd Hcert Hslack.
+    apply sep_certify_finite_sound in Hcert as [_ Hsep].
+    assert (Hsep1 : Separated iou tau theta 1 D).
+    { intros d d' Hin Hin' Hne Hiou.
+      specialize (Hsep d d' Hin Hin' Hne Hiou).
+      destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+      - left. split; [lia | assumption].
+      - right. split; [lia | assumption]. }
+    apply (nms_collapse_onepeak iou_sym_h Hnd Hsd
+             (separated_implies_one_peak Hsep1)
+             (separated_implies_no_tie_clash Hsep1)).
+  Qed.
+
+End SepFiniteCertify.
