@@ -5352,9 +5352,7 @@ Section IterativeTraining.
                          (Nat.leb (score d) (score d')))) D.
 
   Definition find_loser (D : list (@det Box)) : option (@det Box) :=
-    find (fun d =>
-            andb (Nat.leb theta (score d))
-                 (has_above_overlapper D d)) D.
+    find (fun d => has_above_overlapper D d) D.
 
   Fixpoint remove_one (D : list (@det Box)) (target : @det Box)
       : list (@det Box) :=
@@ -5437,26 +5435,21 @@ Section IterativeTraining.
     forall D d,
       find_loser D = None ->
       In d D ->
-      theta <= score d ->
       has_above_overlapper D d = false.
   Proof.
-    intros D d Hf Hin Hth.
+    intros D d Hf Hin.
     unfold find_loser in Hf.
-    apply (find_none _ _ Hf) in Hin.
-    apply Bool.andb_false_iff in Hin as [Hth' | Hh].
-    - apply Nat.leb_gt in Hth'. lia.
-    - assumption.
+    exact (find_none _ _ Hf d Hin).
   Qed.
 
   Theorem train_iter_satisfies_one_peak :
     forall D, one_peak iou tau theta (train_iter D).
   Proof.
     intros D d d' Hin Hin' Hiou Hlt.
+    exfalso.
     pose proof (train_iter_no_loser D) as Hno.
     set (D' := train_iter D) in *.
-    destruct (Nat.leb_spec theta (score d)) as [Hth | Hth]; [|assumption].
-    exfalso.
-    pose proof (find_loser_none_no_above_overlapper D' d Hno Hin Hth) as Hno_overl.
+    pose proof (find_loser_none_no_above_overlapper D' d Hno Hin) as Hno_overl.
     unfold has_above_overlapper in Hno_overl.
     assert (Hex : existsb (fun d'0 =>
               andb (negb (det_eq_b d d'0))
@@ -5469,6 +5462,32 @@ Section IterativeTraining.
         destruct (det_eq_dec box_eq_dec_i d d') as [Heq | _].
         + subst d'. lia.
         + reflexivity.
+      - apply Bool.andb_true_iff. split.
+        + apply Nat.leb_le. assumption.
+        + apply Nat.leb_le. lia. }
+    rewrite Hex in Hno_overl. discriminate.
+  Qed.
+
+  Theorem train_iter_satisfies_no_tie_clash :
+    forall D, no_tie_clash iou tau (train_iter D).
+  Proof.
+    intros D d d' Hin Hin' Hne Heq.
+    set (D' := train_iter D) in *.
+    destruct (Nat.leb_spec tau (iou (box d) (box d'))) as [Hge | Hlt]; [|lia].
+    exfalso.
+    pose proof (train_iter_no_loser D) as Hno.
+    pose proof (find_loser_none_no_above_overlapper D' d Hno Hin) as Hno_overl.
+    unfold has_above_overlapper in Hno_overl.
+    assert (Hex : existsb (fun d'0 =>
+              andb (negb (det_eq_b d d'0))
+                   (andb (Nat.leb tau (iou (box d) (box d'0)))
+                         (Nat.leb (score d) (score d'0)))) D' = true).
+    { apply existsb_exists. exists d'.
+      split; [assumption|].
+      apply Bool.andb_true_iff. split.
+      - apply Bool.negb_true_iff. unfold det_eq_b.
+        destruct (det_eq_dec box_eq_dec_i d d') as [Hd_eq | _]; [contradiction|].
+        reflexivity.
       - apply Bool.andb_true_iff. split.
         + apply Nat.leb_le. assumption.
         + apply Nat.leb_le. lia. }
@@ -5524,19 +5543,16 @@ Section IterativeTraining.
   Qed.
 
   Theorem train_iter_collapse :
-    forall D, NoDup D -> sorted_desc D -> no_tie_clash iou tau D ->
+    forall D, NoDup D -> sorted_desc D ->
       filter_above theta (nms_sorted iou tau (train_iter D))
       = filter_above theta (train_iter D).
   Proof.
-    intros D Hnd Hsd Hntc.
+    intros D Hnd Hsd.
     apply (nms_collapse_onepeak iou_sym_i).
     - apply train_iter_preserves_NoDup. assumption.
     - apply train_iter_preserves_sorted_desc. assumption.
     - apply train_iter_satisfies_one_peak.
-    - intros d d' Hin Hin' Hne Heq.
-      apply train_iter_subset in Hin.
-      apply train_iter_subset in Hin'.
-      apply (Hntc d d' Hin Hin' Hne Heq).
+    - apply train_iter_satisfies_no_tie_clash.
   Qed.
 
 End IterativeTraining.
