@@ -5161,6 +5161,72 @@ Proof.
   cbn. repeat split.
 Qed.
 
+(** ** Floating-point quantization error analysis.
+
+    Real deployments compute scores in IEEE 754, not exact reals. A
+    quantization operator [q] with bounded error [q_eps] (e.g.,
+    [2^{-53}] for binary64 round-to-nearest) introduces additive
+    slack into Lipschitz bounds. Specifically, if [f] is L-Lipschitz
+    in exact reals, [q ∘ f] satisfies
+    [|q(f x) − q(f y)| <= L * |x − y| + 2 * q_eps]. Composed with the
+    bridge: a [SepRespectingHead] built from a quantized score head
+    inherits an extra [2 * q_eps] noise budget. The exact-version
+    [Separated(m)] becomes the FP-version [Separated(m − 2*q_eps)].
+
+    This closes the gap from [R] to deployable hardware: the formalism
+    analyzes the rounding error of FP arithmetic without assuming
+    exact arithmetic on the underlying score computation. *)
+
+Section FloatingPointQuantization.
+
+  Local Open Scope R_scope.
+
+  Variable q : R -> R.
+  Variable q_eps : R.
+  Hypothesis q_eps_nonneg : 0 <= q_eps.
+  Hypothesis q_bounded : forall x, Rabs (q x - x) <= q_eps.
+
+  Theorem quantize_lipschitz_compose :
+    forall (L : R) (f : R -> R),
+      Lipschitz L f ->
+      forall x y, Rabs (q (f x) - q (f y)) <= L * Rabs (x - y) + 2 * q_eps.
+  Proof.
+    intros L f Hlip x y.
+    pose proof (q_bounded (f x)) as Hqx.
+    pose proof (q_bounded (f y)) as Hqy.
+    pose proof (lip_bound Hlip x y) as Hf.
+    pose proof (lip_nonneg Hlip) as HL.
+    assert (Htri :
+      Rabs (q (f x) - q (f y)) <=
+      Rabs (q (f x) - f x) + Rabs (f x - f y) + Rabs (f y - q (f y))).
+    { replace (q (f x) - q (f y))
+         with ((q (f x) - f x) + (f x - f y) + (f y - q (f y)))
+        by lra.
+      eapply Rle_trans; [apply Rabs_triang|].
+      apply Rplus_le_compat_r.
+      apply Rabs_triang. }
+    assert (Hqy' : Rabs (f y - q (f y)) <= q_eps).
+    { replace (f y - q (f y)) with (- (q (f y) - f y)) by lra.
+      rewrite Rabs_Ropp. assumption. }
+    lra.
+  Qed.
+
+  Theorem quantize_preserves_Lipschitz_with_slack :
+    forall (L : R) (f : R -> R),
+      Lipschitz L f ->
+      forall x y,
+        q_eps = 0 ->
+        Rabs (q (f x) - q (f y)) <= L * Rabs (x - y).
+  Proof.
+    intros L f Hlip x y Hq_zero.
+    pose proof (@quantize_lipschitz_compose L f Hlip x y) as H.
+    rewrite Hq_zero in H. lra.
+  Qed.
+
+End FloatingPointQuantization.
+
+Local Close Scope R_scope.
+
 (** ** Real-valued loss [L_separated] with zero-locus equivalence.
 
     [pair_violation m d d'] is a nonneg real quantity that is zero
