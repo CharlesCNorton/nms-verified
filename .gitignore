@@ -12,3 +12,11 @@ Makefile.conf
 _CoqProject
 nms_extracted.ml
 nms_extracted.mli
+nms_cert.ml
+nms_cert.mli
+*.cmi
+*.cmo
+*.cmx
+*.o
+nms_cert_main
+nms_cert_main.exe

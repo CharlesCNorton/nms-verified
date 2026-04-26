@@ -5314,3 +5314,14 @@ Section ConstructiveTraining.
   Qed.
 
 End ConstructiveTraining.
+
+(** ** Certifier extraction for the deployable CLI.
+
+    Extracts the decidable [Separated_check], its correctness witness
+    [Separated_dec], and the finite candidate-search certifier
+    [sep_certify_finite] to OCaml. The OCaml CLI [nms_cert] consumes
+    these extracted functions to certify a model checkpoint's
+    detection output as [Separated] or to return a counterexample. *)
+
+Extraction "nms_cert.ml" Separated_check Separated_dec sep_certify_finite
+                         pair_check det_eq_dec sep_effective_slack.
