@@ -3159,13 +3159,63 @@ Proof.
   - eapply Permutation_trans; eassumption.
 Qed.
 
+(** ** Permutation-invariance of [one_peak] and [no_tie_clash].
+
+    Both predicates quantify over pairs of list elements; permuting the
+    list permutes the pair set without changing membership, so both
+    predicates are preserved. This closes the [nms_collapse_unsorted]
+    weakness by letting the caller supply [one_peak D] / [no_tie_clash D]
+    directly rather than [one_peak (sort_desc D)]. *)
+
+Lemma one_peak_permutation_invariant :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta : nat)
+         (D D' : list (@det Box)),
+    Permutation D D' ->
+    one_peak iou tau theta D ->
+    one_peak iou tau theta D'.
+Proof.
+  intros Box iou tau theta D D' Hperm Hop d d' Hin Hin' Hiou Hlt.
+  apply (Hop d d');
+    [eapply Permutation_in; [apply Permutation_sym; eassumption | assumption]
+    |eapply Permutation_in; [apply Permutation_sym; eassumption | assumption]
+    |assumption | assumption].
+Qed.
+
+Lemma no_tie_clash_permutation_invariant :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau : nat)
+         (D D' : list (@det Box)),
+    Permutation D D' ->
+    no_tie_clash iou tau D ->
+    no_tie_clash iou tau D'.
+Proof.
+  intros Box iou tau D D' Hperm Hntc d d' Hin Hin' Hne Heq.
+  apply (Hntc d d');
+    [eapply Permutation_in; [apply Permutation_sym; eassumption | assumption]
+    |eapply Permutation_in; [apply Permutation_sym; eassumption | assumption]
+    |assumption | assumption].
+Qed.
+
+Lemma Separated_permutation_invariant :
+  forall (Box : Type) (iou : Box -> Box -> nat) (tau theta slack : nat)
+         (D D' : list (@det Box)),
+    Permutation D D' ->
+    Separated iou tau theta slack D ->
+    Separated iou tau theta slack D'.
+Proof.
+  intros Box iou tau theta slack D D' Hperm Hsep d d' Hin Hin' Hne Hiou.
+  apply (Hsep d d');
+    [eapply Permutation_in; [apply Permutation_sym; eassumption | assumption]
+    |eapply Permutation_in; [apply Permutation_sym; eassumption | assumption]
+    |assumption | assumption].
+Qed.
+
 Theorem nms_collapse_unsorted :
   forall (Box : Type) (iou : Box -> Box -> nat),
     (forall a b, iou a b = iou b a) ->
     forall (tau theta : nat) (D : list (@det Box)),
       NoDup D ->
-      one_peak iou tau theta (sort_desc D) ->
-      no_tie_clash iou tau (sort_desc D) ->
+      one_peak iou tau theta D ->
+      no_tie_clash iou tau D ->
       Permutation (filter_above theta D)
                   (filter_above theta
                      (nms_sorted iou tau (sort_desc D))).
@@ -3175,8 +3225,12 @@ Proof.
   pose proof (permutation_filter (above theta) Hperm) as Hperm_filter.
   pose proof (@sort_desc_NoDup _ D Hnd) as Hnd_sorted.
   pose proof (sort_desc_sorted D) as Hsd.
+  pose proof (@one_peak_permutation_invariant Box iou tau theta D (sort_desc D)
+                                              Hperm Hop) as Hop_sorted.
+  pose proof (@no_tie_clash_permutation_invariant Box iou tau D (sort_desc D)
+                                                  Hperm Hntc) as Hntc_sorted.
   pose proof (@nms_collapse_onepeak Box iou iou_sym_h tau theta
-                                    (sort_desc D) Hnd_sorted Hsd Hop Hntc) as Heq.
+                                    (sort_desc D) Hnd_sorted Hsd Hop_sorted Hntc_sorted) as Heq.
   unfold filter_above in *.
   rewrite <- Heq in Hperm_filter.
   exact Hperm_filter.
