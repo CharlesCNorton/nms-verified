@@ -2599,6 +2599,108 @@ Section MultiClass.
   Qed.
 End MultiClass.
 
+(** ** Multi-output detections (per-class scores).
+
+    A real detector predicts a vector of class-conditional scores per
+    box, not a single scalar. [mc_det] carries this structure. The
+    [mc_expand] flattening converts a list of multi-output detections
+    plus a class list into the single-class [(Box * Class)] form
+    consumed by the existing [multiclass_collapse]. The per-class
+    [mc_one_peak] / [mc_no_tie_clash] predicates lift mechanically to
+    [one_peak class_iou] / [no_tie_clash class_iou] on the expanded
+    list, so the keystone is unconditional on input data the moment
+    the per-class structural constraints hold. *)
+
+Section MultiOutput.
+  Variable Box : Type.
+  Variable Class : Type.
+  Variable iou_b : Box -> Box -> nat.
+  Hypothesis iou_b_sym : forall a b, iou_b a b = iou_b b a.
+  Variable cls_eq : forall c1 c2 : Class, {c1 = c2} + {c1 <> c2}.
+  Variable tau : nat.
+  Variable theta : nat.
+  Hypothesis tau_pos : 0 < tau.
+
+  Record mc_det : Type := mkMcDet {
+    mc_box : Box;
+    mc_score : Class -> nat
+  }.
+
+  Definition mc_expand (mds : list mc_det) (cs : list Class)
+      : list (@det (Box * Class)) :=
+    flat_map (fun md =>
+                map (fun c => mkDet (mc_score md c) (mc_box md, c)) cs) mds.
+
+  Definition mc_one_peak (mds : list mc_det) : Prop :=
+    forall md md' c, In md mds -> In md' mds ->
+      tau <= iou_b (mc_box md) (mc_box md') ->
+      mc_score md c < mc_score md' c ->
+      mc_score md c < theta.
+
+  Definition mc_no_tie_clash (mds : list mc_det) : Prop :=
+    forall md md' c, In md mds -> In md' mds ->
+      md <> md' ->
+      mc_score md c = mc_score md' c ->
+      iou_b (mc_box md) (mc_box md') < tau.
+
+  Lemma mc_one_peak_lift :
+    forall mds cs,
+      mc_one_peak mds ->
+      one_peak (@class_iou Box Class iou_b cls_eq) tau theta (mc_expand mds cs).
+  Proof.
+    intros mds cs Hmc d1 d2 Hin1 Hin2 Hiou Hlt.
+    apply in_flat_map in Hin1 as [md1 [Hmd1 Hd1]].
+    apply in_flat_map in Hin2 as [md2 [Hmd2 Hd2]].
+    apply in_map_iff in Hd1 as [c1 [Heq1 _]].
+    apply in_map_iff in Hd2 as [c2 [Heq2 _]].
+    subst d1 d2.
+    unfold class_iou in Hiou. simpl in Hiou.
+    destruct (cls_eq c1 c2) as [Heq | _]; [|lia].
+    subst c2.
+    cbn [score box] in *.
+    apply (Hmc md1 md2 c1 Hmd1 Hmd2 Hiou Hlt).
+  Qed.
+
+  Lemma mc_no_tie_clash_lift :
+    forall mds cs,
+      mc_no_tie_clash mds ->
+      no_tie_clash (@class_iou Box Class iou_b cls_eq) tau (mc_expand mds cs).
+  Proof.
+    intros mds cs Hmc d1 d2 Hin1 Hin2 Hne Heq_score.
+    apply in_flat_map in Hin1 as [md1 [Hmd1 Hd1]].
+    apply in_flat_map in Hin2 as [md2 [Hmd2 Hd2]].
+    apply in_map_iff in Hd1 as [c1 [Heq1 _]].
+    apply in_map_iff in Hd2 as [c2 [Heq2 _]].
+    subst d1 d2.
+    cbn [score box] in *.
+    unfold class_iou. simpl.
+    destruct (cls_eq c1 c2) as [Heq_c | _]; [|lia].
+    subst c2.
+    assert (Hmd_ne : md1 <> md2).
+    { intro Hmd_eq. subst md2. apply Hne. reflexivity. }
+    apply (Hmc md1 md2 c1 Hmd1 Hmd2 Hmd_ne Heq_score).
+  Qed.
+
+  Theorem mc_keystone :
+    forall (mds : list mc_det) (cs : list Class),
+      NoDup (mc_expand mds cs) ->
+      sorted_desc (mc_expand mds cs) ->
+      mc_one_peak mds ->
+      mc_no_tie_clash mds ->
+      filter_above theta
+        (nms_sorted (@class_iou Box Class iou_b cls_eq) tau (mc_expand mds cs))
+      = filter_above theta (mc_expand mds cs).
+  Proof.
+    intros mds cs Hnd Hsd Hop Hntc.
+    apply (@multiclass_collapse Box Class iou_b iou_b_sym cls_eq
+             tau theta (mc_expand mds cs)).
+    - assumption.
+    - assumption.
+    - apply mc_one_peak_lift; assumption.
+    - apply mc_no_tie_clash_lift; assumption.
+  Qed.
+End MultiOutput.
+
 (** ** Concrete soft-NMS decay instances. *)
 
 Definition linear_decay (s : nat) : nat := s / 2.
