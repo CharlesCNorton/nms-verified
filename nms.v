@@ -4857,6 +4857,76 @@ Proof.
   vm_compute. lia.
 Qed.
 
+(** ** Concrete Lipschitz bound for a real two-layer architecture.
+
+    [arch_M1 := [[3]]] and [arch_M2 := [[2]]] are explicit weight
+    matrices for a one-input one-output ReLU network
+    [arch_f x := 2 * Rmax 0 (3 * x)]. Part I's [lip_compose],
+    [lip_relu], and [lip_mult_left] yield a Lipschitz constant 6 (=
+    [mat_inf_norm arch_M1 * mat_inf_norm arch_M2]). The corresponding
+    [arch_head : SepRespectingHead R] inherits this L via the
+    [real_lipschitz_to_nat] adapter. The L value reduces to a closed
+    numeric form by [reflexivity] / [vm_compute]. *)
+
+Local Open Scope R_scope.
+
+Definition arch_M1 : matrix := [[3%R]].
+Definition arch_M2 : matrix := [[2%R]].
+
+Lemma arch_M1_norm : mat_inf_norm arch_M1 = 3.
+Proof.
+  unfold arch_M1, mat_inf_norm. simpl.
+  rewrite Rabs_right by lra. rewrite Rplus_0_r.
+  apply Rmax_left. lra.
+Qed.
+
+Lemma arch_M2_norm : mat_inf_norm arch_M2 = 2.
+Proof.
+  unfold arch_M2, mat_inf_norm. simpl.
+  rewrite Rabs_right by lra. rewrite Rplus_0_r.
+  apply Rmax_left. lra.
+Qed.
+
+Definition arch_f (x : R) : R := 2 * Rmax 0 (3 * x).
+
+Lemma arch_f_nonneg : forall x, 0 <= arch_f x.
+Proof. intros x. unfold arch_f. apply Rmult_le_pos; [lra | apply Rmax_l]. Qed.
+
+Lemma arch_f_lipschitz : Lipschitz 6 arch_f.
+Proof.
+  unfold arch_f.
+  pose proof (lip_compose
+                (lip_mult_left 2)
+                (lip_compose lip_relu (lip_mult_left 3))) as H.
+  rewrite (Rabs_right 2) in H by lra.
+  rewrite (Rabs_right 3) in H by lra.
+  rewrite Rmult_1_l in H.
+  replace (2 * 3) with 6 in H by lra.
+  exact H.
+Qed.
+
+Local Close Scope R_scope.
+
+Definition arch_head : SepRespectingHead R.
+Proof.
+  refine (mkSepHead (rnat_h 1 arch_f) (rnat_dist 1) 6 0 1 _ _).
+  - apply real_lipschitz_to_nat with (L := 6%R) (f := arch_f).
+    + apply arch_f_lipschitz.
+    + lra.
+    + simpl. lra.
+    + apply arch_f_nonneg.
+  - lia.
+Defined.
+
+Example arch_head_L : sep_L arch_head = 6.
+Proof. reflexivity. Qed.
+
+Example arch_head_eps : sep_eps arch_head = 0.
+Proof. reflexivity. Qed.
+
+Example arch_head_m : sep_m arch_head = 1.
+Proof. reflexivity. Qed.
+
 (** ** Theorem 4 — finite certificate search.
 
     Reuses the existing [Separated_dec] / [Separated_check] machinery.
