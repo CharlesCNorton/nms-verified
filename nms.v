@@ -7068,6 +7068,423 @@ Proof.
   - right. split; lia.
 Qed.
 
+(** ******************************************************************** *)
+(** *      Part VII. Interval-Bound Propagation Lipschitz                *)
+(** ******************************************************************** *)
+
+(** Part I's [multilayer_lipschitz] gives the operator-norm product
+    [Π mat_inf_norm M_i] as a global Lipschitz bound for an [n]-layer
+    ReLU stack. On real architectures the product overestimates the
+    true input-space Lipschitz constant by three to six orders of
+    magnitude: the input distribution occupies a small region of
+    [R^d], on which most ReLUs are determinately active or dead and
+    most matrix entries contribute either fully or not at all to the
+    input-output sensitivity. The bridge precondition
+    [2 * L * eps <= m] then forces unrealistic margins [m] when [L]
+    is the global product.
+
+    This part introduces [interval_lipschitz f lo hi L] — the local
+    Lipschitz constant of [f] restricted to the input box [lo, hi].
+    The two structural wins:
+
+      (a) Linear layers retain the operator-norm bound, but on the
+          box rather than globally, allowing per-layer tightening
+          when ReLU activations are sign-determined.
+      (b) ReLU is 0-Lipschitz on a box whose upper bound is
+          componentwise non-positive — dead neurons contribute
+          nothing to the chain Lipschitz.
+
+    The composition theorem [interval_lipschitz_compose] inherits
+    both: if the propagated box has a dead segment, that segment's
+    chain factor is zero. The worked example
+    [ibp_dead_local_zero] instantiates this concretely on a 1x1
+    ReLU stack whose first layer is dead on a positive input box;
+    the local Lipschitz constant is zero, while the global product
+    bound is six.
+
+    Theorems delivered here:
+
+      Theorem 1.  global_implies_interval_lipschitz   (loose case)
+      Theorem 2.  interval_lipschitz_monotone         (looser is fine)
+      Theorem 3.  mat_vec_interval_lipschitz          (linear layer)
+      Theorem 4.  relu_interval_lipschitz             (ReLU global)
+      Theorem 5.  relu_interval_lipschitz_dead        (ReLU on dead box)
+      Theorem 6.  interval_lipschitz_compose          (chain rule)
+      Theorem 7.  multilayer_interval_lipschitz_global (recovers Part I)
+      Theorem 8.  ibp_dead_local_zero                  (worked example:
+                                                       local L = 0,
+                                                       global L = 6) *)
+
+Local Open Scope R_scope.
+Local Unset Implicit Arguments.
+
+(** ** Componentwise box membership: [lo[i] <= v[i] <= hi[i]]. *)
+
+Fixpoint in_box (lo hi v : list R) : Prop :=
+  match lo, hi, v with
+  | [], [], [] => True
+  | l :: ls, h :: hs, x :: xs => l <= x <= h /\ in_box ls hs xs
+  | _, _, _ => False
+  end.
+
+Lemma in_box_length_lo :
+  forall lo hi v, in_box lo hi v -> length lo = length v.
+Proof.
+  induction lo as [|l ls IH]; intros [|h hs] [|x xs] Hbox;
+    simpl in Hbox; try contradiction; try reflexivity.
+  destruct Hbox as [_ Hrest]. simpl. f_equal. apply (IH hs xs Hrest).
+Qed.
+
+Lemma in_box_length_hi :
+  forall lo hi v, in_box lo hi v -> length hi = length v.
+Proof.
+  induction lo as [|l ls IH]; intros [|h hs] [|x xs] Hbox;
+    simpl in Hbox; try contradiction; try reflexivity.
+  destruct Hbox as [_ Hrest]. simpl. f_equal. apply (IH hs xs Hrest).
+Qed.
+
+Lemma in_box_length :
+  forall lo hi v,
+    in_box lo hi v ->
+    length lo = length v /\ length hi = length v.
+Proof.
+  intros lo hi v H. split.
+  - apply (in_box_length_lo _ _ _ H).
+  - apply (in_box_length_hi _ _ _ H).
+Qed.
+
+(** ** A vector in a box with non-positive upper bound is itself
+       componentwise non-positive. *)
+
+Lemma in_box_dead_implies_nonpos :
+  forall lo hi v,
+    in_box lo hi v ->
+    Forall (fun h => h <= 0) hi ->
+    Forall (fun x => x <= 0) v.
+Proof.
+  intros lo hi v Hbox Hhi.
+  revert lo hi Hbox Hhi.
+  induction v as [|x xs IH]; intros [|l ls] [|h hs] Hbox Hhi;
+    simpl in Hbox; try contradiction.
+  - constructor.
+  - destruct Hbox as [[Hl Hh] Hrest].
+    inversion Hhi as [|y ys Hh_neg Hhi_rest]; subst.
+    constructor.
+    + lra.
+    + apply (IH ls hs Hrest Hhi_rest).
+Qed.
+
+(** ** Local Lipschitz over a box. *)
+
+Definition interval_lipschitz (f : list R -> list R)
+                              (lo hi : list R) (L : R) : Prop :=
+  0 <= L /\
+  forall u v, in_box lo hi u -> in_box lo hi v ->
+              vec_dist (f u) (f v) <= L * vec_dist u v.
+
+Lemma interval_lipschitz_nonneg :
+  forall f lo hi L, interval_lipschitz f lo hi L -> 0 <= L.
+Proof. intros f lo hi L [HL _]. exact HL. Qed.
+
+(** ** Theorem 2: looser interval bounds are valid. *)
+
+Theorem interval_lipschitz_monotone :
+  forall f lo hi L1 L2,
+    L1 <= L2 ->
+    interval_lipschitz f lo hi L1 ->
+    interval_lipschitz f lo hi L2.
+Proof.
+  intros f lo hi L1 L2 Hle [HL1 Hf]. split.
+  - lra.
+  - intros u v Hu Hv.
+    eapply Rle_trans; [apply Hf; assumption|].
+    apply Rmult_le_compat_r; [apply vec_dist_nonneg | assumption].
+Qed.
+
+(** ** Theorem 1: global Lipschitz implies interval Lipschitz on any
+       box of consistent dimensions. The reverse direction is the
+       point of IBP — local can be much tighter than global. *)
+
+Theorem global_implies_interval_lipschitz :
+  forall f L lo hi,
+    0 <= L ->
+    (forall u v, length u = length v ->
+                 vec_dist (f u) (f v) <= L * vec_dist u v) ->
+    interval_lipschitz f lo hi L.
+Proof.
+  intros f L lo hi HL Hglob.
+  split; [assumption|].
+  intros u v Hu Hv.
+  pose proof (in_box_length_lo lo hi u Hu) as Hu_len.
+  pose proof (in_box_length_lo lo hi v Hv) as Hv_len.
+  apply Hglob. congruence.
+Qed.
+
+(** ** Theorem 3: linear layer is operator-norm Lipschitz on any
+       box. The bound is loose unless the box is engineered to expose
+       per-layer structure; tightening comes from box propagation
+       feeding into ReLU dead-neuron analysis below. *)
+
+Theorem mat_vec_interval_lipschitz :
+  forall M lo hi,
+    interval_lipschitz (mat_vec M) lo hi (mat_inf_norm M).
+Proof.
+  intros M lo hi.
+  apply global_implies_interval_lipschitz.
+  - apply mat_inf_norm_nonneg.
+  - intros u v Hlen. apply mat_vec_lipschitz. assumption.
+Qed.
+
+(** ** Theorem 4: ReLU is 1-Lipschitz on any box. *)
+
+Theorem relu_interval_lipschitz :
+  forall lo hi,
+    interval_lipschitz apply_relu_vec lo hi 1.
+Proof.
+  intros lo hi.
+  apply global_implies_interval_lipschitz.
+  - lra.
+  - intros u v _. rewrite Rmult_1_l. apply apply_relu_vec_lip.
+Qed.
+
+(** ** Dead-neuron lemmas. ReLU on a vector whose components are all
+       <= 0 returns the all-zeros vector of the same length. *)
+
+Lemma apply_relu_vec_dead :
+  forall v, Forall (fun x => x <= 0) v -> apply_relu_vec v = map (fun _ => 0) v.
+Proof.
+  intros v Hall. unfold apply_relu_vec.
+  induction v as [|x rest IH]; simpl; [reflexivity|].
+  inversion Hall; subst.
+  rewrite (Rmax_left 0 x) by assumption.
+  f_equal. apply IH. assumption.
+Qed.
+
+Lemma vec_dist_zeros :
+  forall (l1 l2 : list R), length l1 = length l2 ->
+    vec_dist (map (fun _ => 0) l1) (map (fun _ => 0) l2) = 0.
+Proof.
+  intros l1 l2 Hlen. unfold vec_dist.
+  revert l2 Hlen.
+  induction l1 as [|x1 r1 IH]; intros l2 Hlen;
+    destruct l2 as [|x2 r2]; simpl in Hlen; try discriminate.
+  - simpl. reflexivity.
+  - injection Hlen as Hlen'.
+    simpl.
+    replace (0 - 0) with 0 by lra.
+    rewrite Rabs_R0.
+    rewrite (IH r2 Hlen').
+    apply Rmax_left. lra.
+Qed.
+
+(** ** Theorem 5: ReLU on a dead box (upper bound componentwise
+       non-positive) is 0-Lipschitz. The output is identically the
+       zero vector regardless of which box element is fed. *)
+
+Theorem relu_interval_lipschitz_dead :
+  forall lo hi,
+    length lo = length hi ->
+    Forall (fun h => h <= 0) hi ->
+    interval_lipschitz apply_relu_vec lo hi 0.
+Proof.
+  intros lo hi Hloh Hall_neg.
+  split; [lra|].
+  intros u v Hu Hv.
+  rewrite Rmult_0_l.
+  pose proof (in_box_dead_implies_nonpos lo hi u Hu Hall_neg) as Hu_nonpos.
+  pose proof (in_box_dead_implies_nonpos lo hi v Hv Hall_neg) as Hv_nonpos.
+  pose proof (in_box_length_lo lo hi u Hu) as Hlu.
+  pose proof (in_box_length_lo lo hi v Hv) as Hlv.
+  rewrite (apply_relu_vec_dead u Hu_nonpos).
+  rewrite (apply_relu_vec_dead v Hv_nonpos).
+  assert (Hluv : length u = length v) by congruence.
+  rewrite (vec_dist_zeros u v Hluv).
+  lra.
+Qed.
+
+(** ** Theorem 6: composition under propagated boxes.
+
+    [f] is L1-Lipschitz on input box [lo, hi] and maps it into the
+    output box [lo', hi']; [g] is L2-Lipschitz on [lo', hi']; the
+    composition is L1*L2-Lipschitz on the input box. The propagated
+    box [lo', hi'] is the IBP fingerprint of [f] on [lo, hi]. *)
+
+Theorem interval_lipschitz_compose :
+  forall f g L1 L2 lo hi lo' hi',
+    interval_lipschitz f lo hi L1 ->
+    interval_lipschitz g lo' hi' L2 ->
+    (forall u, in_box lo hi u -> in_box lo' hi' (f u)) ->
+    interval_lipschitz (fun x => g (f x)) lo hi (L1 * L2).
+Proof.
+  intros f g L1 L2 lo hi lo' hi' [HL1 Hf] [HL2 Hg] Hpropagate.
+  split.
+  - apply Rmult_le_pos; assumption.
+  - intros u v Hu Hv.
+    pose proof (Hf u v Hu Hv) as Hfuv.
+    pose proof (Hg (f u) (f v) (Hpropagate u Hu) (Hpropagate v Hv)) as Hguv.
+    eapply Rle_trans; [exact Hguv|].
+    rewrite (Rmult_comm L1 L2).
+    rewrite Rmult_assoc.
+    apply Rmult_le_compat_l; [assumption|exact Hfuv].
+Qed.
+
+(** ** Theorem 7: applying [global_implies_interval_lipschitz] to
+       [multilayer_lipschitz] recovers the global product bound as a
+       (loose) interval bound. The IBP win shows up only when the
+       caller picks layer-specific [L_i]'s tighter than [mat_inf_norm
+       M_i] using the propagated input boxes. *)
+
+Corollary multilayer_interval_lipschitz_global :
+  forall Ms lo hi,
+    interval_lipschitz (apply_layers Ms) lo hi (product_norms Ms).
+Proof.
+  intros Ms lo hi.
+  apply global_implies_interval_lipschitz.
+  - apply product_norms_nonneg.
+  - intros u v Hlen. apply multilayer_lipschitz. assumption.
+Qed.
+
+(** ** Worked example: 1x1 ReLU stack with a dead first layer.
+
+    [ibp_dead_M1 := [[-3]]], [ibp_dead_M2 := [[2]]]. The two-layer
+    network [v |-> M2 (ReLU (M1 v))] has global product bound
+    [mat_inf_norm M1 * mat_inf_norm M2 = 3 * 2 = 6]. On the input
+    box [0, 100], the inner [mat_vec M1] image is [-300, 0] —
+    componentwise non-positive — so ReLU collapses it to [0]. The
+    full network is identically zero on the box, hence locally
+    0-Lipschitz. The local bound is six units below the global,
+    a constructive instance of the IBP gap that breaks deployable
+    bridges in Part V. *)
+
+Definition ibp_dead_M1 : matrix := [[-3]].
+Definition ibp_dead_M2 : matrix := [[2]].
+
+Definition ibp_dead_inner (v : list R) : list R :=
+  apply_relu_vec (mat_vec ibp_dead_M1 v).
+
+Definition ibp_dead_f (v : list R) : list R :=
+  mat_vec ibp_dead_M2 (ibp_dead_inner v).
+
+Definition ibp_dead_lo : list R := [0].
+Definition ibp_dead_hi : list R := [100].
+Definition ibp_dead_mid_lo : list R := [-300].
+Definition ibp_dead_mid_hi : list R := [0].
+Definition ibp_dead_post_lo : list R := [0].
+Definition ibp_dead_post_hi : list R := [0].
+
+Lemma ibp_dead_M1_norm : mat_inf_norm ibp_dead_M1 = 3.
+Proof.
+  unfold ibp_dead_M1, mat_inf_norm. simpl.
+  replace (Rabs (-3)) with 3.
+  - rewrite Rplus_0_r. apply Rmax_left. lra.
+  - replace (-3) with (-(3)) by lra. rewrite Rabs_Ropp.
+    rewrite Rabs_right by lra. reflexivity.
+Qed.
+
+Lemma ibp_dead_M2_norm : mat_inf_norm ibp_dead_M2 = 2.
+Proof.
+  unfold ibp_dead_M2, mat_inf_norm. simpl.
+  rewrite Rabs_right by lra. rewrite Rplus_0_r.
+  apply Rmax_left. lra.
+Qed.
+
+Lemma ibp_dead_M1_propagates :
+  forall u, in_box ibp_dead_lo ibp_dead_hi u ->
+            in_box ibp_dead_mid_lo ibp_dead_mid_hi (mat_vec ibp_dead_M1 u).
+Proof.
+  intros u Hu.
+  unfold ibp_dead_lo, ibp_dead_hi, ibp_dead_mid_lo, ibp_dead_mid_hi in *.
+  destruct u as [|x [|y rest]]; simpl in Hu; try tauto.
+  destruct Hu as [[Hxlo Hxhi] _].
+  unfold ibp_dead_M1; cbn [mat_vec dot].
+  rewrite Rplus_0_r.
+  simpl. split; [|exact I]. split; nra.
+Qed.
+
+Lemma ibp_dead_mid_hi_nonpos : Forall (fun h => h <= 0) ibp_dead_mid_hi.
+Proof. unfold ibp_dead_mid_hi. constructor; [lra|constructor]. Qed.
+
+Lemma ibp_dead_inner_propagates :
+  forall u, in_box ibp_dead_lo ibp_dead_hi u ->
+            in_box ibp_dead_post_lo ibp_dead_post_hi (ibp_dead_inner u).
+Proof.
+  intros u Hu.
+  unfold ibp_dead_lo, ibp_dead_hi in Hu.
+  destruct u as [|x [|y rest]]; simpl in Hu; try tauto.
+  destruct Hu as [[Hxlo Hxhi] _].
+  unfold ibp_dead_inner, ibp_dead_M1.
+  cbn [mat_vec dot apply_relu_vec map].
+  rewrite Rplus_0_r.
+  rewrite (Rmax_left 0 (-3 * x)) by nra.
+  unfold ibp_dead_post_lo, ibp_dead_post_hi.
+  simpl. split; [|exact I]. split; lra.
+Qed.
+
+(** ** Theorem 8a: the inner sub-network (M1 then ReLU) is locally
+       0-Lipschitz on the input box. Composition of [mat_vec M1]'s
+       3-Lipschitz bound with ReLU's 0-Lipschitz dead-box bound; the
+       product collapses to zero. *)
+
+Theorem ibp_dead_inner_local_zero :
+  interval_lipschitz ibp_dead_inner ibp_dead_lo ibp_dead_hi 0.
+Proof.
+  unfold ibp_dead_inner.
+  assert (Hmid_loh : length ibp_dead_mid_lo = length ibp_dead_mid_hi) by reflexivity.
+  pose proof (relu_interval_lipschitz_dead
+                ibp_dead_mid_lo ibp_dead_mid_hi
+                Hmid_loh ibp_dead_mid_hi_nonpos) as Hrelu.
+  pose proof (mat_vec_interval_lipschitz ibp_dead_M1 ibp_dead_lo ibp_dead_hi) as Hmat.
+  pose proof (interval_lipschitz_compose
+                (mat_vec ibp_dead_M1) apply_relu_vec
+                (mat_inf_norm ibp_dead_M1) 0
+                ibp_dead_lo ibp_dead_hi
+                ibp_dead_mid_lo ibp_dead_mid_hi
+                Hmat Hrelu ibp_dead_M1_propagates) as Hcomp.
+  rewrite Rmult_0_r in Hcomp.
+  exact Hcomp.
+Qed.
+
+(** ** Theorem 8: the full two-layer network is locally 0-Lipschitz on
+       the input box. *)
+
+Theorem ibp_dead_local_zero :
+  interval_lipschitz ibp_dead_f ibp_dead_lo ibp_dead_hi 0.
+Proof.
+  unfold ibp_dead_f.
+  pose proof (mat_vec_interval_lipschitz ibp_dead_M2 ibp_dead_post_lo ibp_dead_post_hi)
+    as Hmat2.
+  pose proof (interval_lipschitz_compose
+                ibp_dead_inner (mat_vec ibp_dead_M2)
+                0 (mat_inf_norm ibp_dead_M2)
+                ibp_dead_lo ibp_dead_hi
+                ibp_dead_post_lo ibp_dead_post_hi
+                ibp_dead_inner_local_zero Hmat2
+                ibp_dead_inner_propagates) as Hcomp.
+  rewrite Rmult_0_l in Hcomp.
+  exact Hcomp.
+Qed.
+
+(** ** Tightness gap: the global product bound for the same network is
+       6. The ratio between global and local is unbounded in this
+       example because the local constant is exactly zero. *)
+
+Theorem ibp_dead_global_six :
+  product_norms [ibp_dead_M1; ibp_dead_M2] = 6.
+Proof.
+  cbn [product_norms].
+  rewrite ibp_dead_M1_norm, ibp_dead_M2_norm. lra.
+Qed.
+
+Theorem ibp_dead_tightness_gap :
+  product_norms [ibp_dead_M1; ibp_dead_M2] = 6 /\
+  interval_lipschitz ibp_dead_f ibp_dead_lo ibp_dead_hi 0.
+Proof.
+  split; [apply ibp_dead_global_six | apply ibp_dead_local_zero].
+Qed.
+
+Local Set Implicit Arguments.
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
