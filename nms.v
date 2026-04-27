@@ -8400,6 +8400,104 @@ End MultiClassL.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XVI. Weighted bipartite matching infrastructure          *)
+(** ******************************************************************** *)
+
+(** [greedy_match] (Part IV) is unit-weight optimal but not
+    weighted optimal: with cost matrix [b1-g1: 10, b1-g2: 9,
+    b2-g1: 9, b2-g2: 0], greedy picks 10 then 0 (total 10) while
+    the optimum is 9+9 = 18. The full [O(n^3)] Hungarian algorithm
+    closes this gap with potentials, alternating trees, and
+    augmenting paths.
+
+    This part lays the matching infrastructure: cost matrix as
+    [Box -> GT -> R], matching as list of pairs, weight as the sum
+    of edge costs, injectivity on each side. The structural
+    [exists_max_weight_matching] theorem proves that for any finite
+    candidate list, the maximum-weight matching exists in the list.
+    Combining this with an enumeration of all injective matchings
+    (from a finite Box / GT list) yields existence of the optimal
+    matching. The Hungarian algorithm is the polynomial-time
+    constructor; the existence theorem is its abstract guarantee.
+
+    Theorems delivered:
+
+      Theorem 1.  fold_right_Rmax_witness   (max element in list)
+      Theorem 2.  exists_max_weight_matching (max-weight in
+                                              candidate list) *)
+
+Local Open Scope R_scope.
+
+Section HungarianMatching.
+
+  Variable Box GT : Type.
+  Variable cost : Box -> GT -> R.
+
+  Definition matching_weight (M : list (Box * GT)) : R :=
+    fold_right Rplus 0 (map (fun p => cost (fst p) (snd p)) M).
+
+  Definition matching_box_injective (M : list (Box * GT)) : Prop :=
+    forall b g1 g2, In (b, g1) M -> In (b, g2) M -> g1 = g2.
+
+  Definition matching_gt_injective (M : list (Box * GT)) : Prop :=
+    forall b1 b2 g, In (b1, g) M -> In (b2, g) M -> b1 = b2.
+
+  Definition matching_injective (M : list (Box * GT)) : Prop :=
+    matching_box_injective M /\ matching_gt_injective M.
+
+  (** Theorem 1. Every non-empty list of reals contains an element
+      that is greater than or equal to all elements in the list. *)
+
+  Theorem fold_right_Rmax_witness :
+    forall (l : list R), l <> [] ->
+      exists x, In x l /\ forall y, In y l -> y <= x.
+  Proof.
+    induction l as [|x rest IH]; intros Hne; [contradiction|].
+    destruct rest as [|y rest'].
+    - exists x. split; [left; reflexivity|].
+      intros y0 [Heq | []]. lra.
+    - assert (Hne_rest : y :: rest' <> []) by discriminate.
+      destruct (IH Hne_rest) as [m [Hm Hmax]].
+      destruct (Rle_dec x m) as [Hle | Hlt].
+      + exists m. split; [right; assumption|].
+        intros y0 [Heq | Hin].
+        * subst y0. assumption.
+        * apply Hmax. assumption.
+      + exists x. split; [left; reflexivity|].
+        intros y0 [Heq | Hin].
+        * subst y0. lra.
+        * pose proof (Hmax y0 Hin). lra.
+  Qed.
+
+  (** Theorem 2. For any non-empty list of candidate matchings, the
+      maximum-weight matching exists in the list. The Hungarian
+      algorithm constructs this maximum in [O(n^3)]; the existence
+      theorem is the abstract correctness target. *)
+
+  Theorem exists_max_weight_matching :
+    forall (matchings : list (list (Box * GT))),
+      matchings <> [] ->
+      exists M, In M matchings /\
+                forall M', In M' matchings ->
+                  matching_weight M' <= matching_weight M.
+  Proof.
+    intros matchings Hne.
+    assert (Hne_w : map matching_weight matchings <> []).
+    { destruct matchings; [contradiction|simpl; discriminate]. }
+    pose proof (fold_right_Rmax_witness Hne_w)
+      as [w [Hw_in Hw_max]].
+    apply in_map_iff in Hw_in as [M [Hweq HM_in]].
+    exists M. split; [assumption|].
+    intros M' HM'_in.
+    rewrite Hweq.
+    apply Hw_max. apply in_map_iff. exists M'. split; [reflexivity|assumption].
+  Qed.
+
+End HungarianMatching.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
