@@ -5161,6 +5161,58 @@ Proof.
   cbn. repeat split.
 Qed.
 
+(** ** Closure of the [SepRespectingHead] class under composition.
+
+    Promotes the universal-approximation result from "any individual
+    Lipschitz function is in the class" to the structural closure
+    "the class is closed under function composition with multiplied
+    Lipschitz constants." Combined with the constant function (L=0)
+    and identity (L=1) being in the class, this closes the class
+    under the standard Lipschitz algebra — analogous to Part I's real
+    [lip_compose] but lifted to the nat-domain SepRespectingHead
+    setting. The class is structurally rich enough to absorb arbitrary
+    finite networks of Lipschitz layers. *)
+
+Lemma abs_diff_iff_max_min :
+  forall a b L,
+    Nat.max a b <= Nat.min a b + L <-> abs_diff a b <= L.
+Proof.
+  intros a b L. unfold abs_diff.
+  destruct (Nat.leb_spec a b) as [Hab | Hab]; split; intros Hyp; lia.
+Qed.
+
+Theorem Lipschitz_nat_compose :
+  forall (f1 f2 : nat -> nat) (L1 L2 : nat),
+    (forall i j, Nat.max (f1 i) (f1 j) <=
+                 Nat.min (f1 i) (f1 j) + L1 * abs_diff i j) ->
+    (forall i j, Nat.max (f2 i) (f2 j) <=
+                 Nat.min (f2 i) (f2 j) + L2 * abs_diff i j) ->
+    forall i j,
+      Nat.max (f2 (f1 i)) (f2 (f1 j)) <=
+      Nat.min (f2 (f1 i)) (f2 (f1 j)) + (L2 * L1) * abs_diff i j.
+Proof.
+  intros f1 f2 L1 L2 H1 H2 i j.
+  apply abs_diff_iff_max_min.
+  pose proof (H1 i j) as Hf1. apply abs_diff_iff_max_min in Hf1.
+  pose proof (H2 (f1 i) (f1 j)) as Hf2. apply abs_diff_iff_max_min in Hf2.
+  nia.
+Qed.
+
+Corollary sep_respecting_class_compose :
+  forall (f1 f2 : nat -> nat) (L1 L2 : nat),
+    (forall i j, Nat.max (f1 i) (f1 j) <=
+                 Nat.min (f1 i) (f1 j) + L1 * abs_diff i j) ->
+    (forall i j, Nat.max (f2 i) (f2 j) <=
+                 Nat.min (f2 i) (f2 j) + L2 * abs_diff i j) ->
+    exists Sh : SepRespectingHead nat,
+      sep_h Sh = (fun i => f2 (f1 i)) /\ sep_L Sh = L2 * L1.
+Proof.
+  intros f1 f2 L1 L2 H1 H2.
+  exists (head_from_lipschitz_nat (fun i => f2 (f1 i)) (L2 * L1)
+            (Lipschitz_nat_compose f1 f2 L1 L2 H1 H2)).
+  cbn. split; reflexivity.
+Qed.
+
 (** ** Floating-point quantization error analysis.
 
     Real deployments compute scores in IEEE 754, not exact reals. A
