@@ -13032,3 +13032,61 @@ Proof. intros m. cbn. lia. Qed.
 Example bitmask_dp_tree_size_n2 :
   forall m, bitmask_dp_tree_size 2 m = (1 + m + m * m)%nat.
 Proof. intros m. cbn. lia. Qed.
+
+(** ******************************************************************** *)
+(** *      Section 10. Five-detection worked instance                    *)
+(** ******************************************************************** *)
+
+(** A 5-detection instance combining (a) realistic-ish list size (the
+    largest non-vacuous bridge instance in the file), (b) a genuinely
+    fired high-IoU branch — every distinct pair has [c1_iou = 60 > tau =
+    50] — and (c) a non-identity Lipschitz score head [rnat_h 1 c30_f]
+    with Lipschitz constant 3 (built from [c30_f x = Rmax 0 (3 * x)]
+    via the [real_lipschitz_to_nat] adapter). The earlier [c30] /
+    [c40] instances each cover at most two of these three properties:
+    [c30] uses the non-identity head but only on 2 detections;
+    [c40] is non-vacuous but uses identity-on-score head and 2
+    detections; [e20] reaches 20 detections but is vacuous. This
+    instance closes that gap. *)
+
+Definition c70_h (n : nat) : nat := 3 * n.
+
+Lemma c70_h_lipschitz :
+  forall x y, Nat.max (c70_h x) (c70_h y) <=
+              Nat.min (c70_h x) (c70_h y) + 3 * abs_diff x y.
+Proof.
+  intros x y. unfold c70_h, abs_diff.
+  destruct (Nat.leb_spec x y); lia.
+Qed.
+
+Definition c70_D : list (@det c1_box) :=
+  [mkDet 0 0; mkDet 3 1; mkDet 6 2; mkDet 9 3; mkDet 12 4].
+
+Theorem c70_5_detections_separated :
+  Separated c1_iou 50 10 3 c70_D.
+Proof.
+  apply (@lipschitz_bridge_substantive c1_box c1_iou 50 10
+           nat c70_h abs_diff
+           (fun d => box d) (fun d => box d)
+           3 3 0 c70_D).
+  - lia.
+  - apply c70_h_lipschitz.
+  - intros d Hin. cbn in Hin.
+    destruct Hin as [Heq | [Heq | [Heq | [Heq | [Heq | []]]]]];
+      subst d; cbn [score box]; reflexivity.
+  - intros d _. unfold abs_diff. rewrite Nat.leb_refl. lia.
+  - intros d d' Hin Hin' Hne Hiou. cbn in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | [Heq | [Heq | [Heq | []]]]]];
+    destruct Hin' as [Heq' | [Heq' | [Heq' | [Heq' | [Heq' | []]]]]];
+    subst d d';
+    try (exfalso; apply Hne; reflexivity);
+    cbn [box]; unfold c70_h;
+    cbn [Nat.min Nat.max]; lia.
+  - intros d d' Hin Hin' Hne Hiou. cbn in Hin, Hin'.
+    destruct Hin as [Heq | [Heq | [Heq | [Heq | [Heq | []]]]]];
+    destruct Hin' as [Heq' | [Heq' | [Heq' | [Heq' | [Heq' | []]]]]];
+    subst d d';
+    try (exfalso; apply Hne; reflexivity);
+    cbn [box]; unfold c70_h;
+    cbn [Nat.min]; lia.
+Qed.
