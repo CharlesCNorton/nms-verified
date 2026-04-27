@@ -7874,6 +7874,79 @@ End MultilayerQuantLipschitz.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XI. Training as SGD on L_separated_sq                   *)
+(** ******************************************************************** *)
+
+(** Part VI's [trained_list := nms_sorted iou tau D] defines
+    training as NMS-output-storage: the procedure runs NMS once on
+    the input list and stores the output. It does not learn from
+    data or minimize any loss.
+
+    The substantive replacement: train by SGD on the smooth
+    surrogate loss [L_separated_sq], whose per-pair zero-locus
+    equals the Separated locus ([pair_violation_sq_zero_iff],
+    already proved; full sum-zero-locus is item 4 of remaining
+    work). [sgd_telescoping_vec] (Part VI's vector SGD analysis)
+    gives stationary-point convergence for any non-negative smooth
+    loss. Composing with [L_separated_sq_nonneg] (already proved)
+    yields the unconditional partial result: SGD on L_separated_sq
+    drives the cumulative grad-norm-squared sum into the bound
+    [2 * L_separated_sq(θ_0) / η]. The full claim that the
+    stationary point is a global minimum (and hence reaches the
+    Separated locus) requires convexity, which is item 3 of
+    remaining work.
+
+    Theorem delivered:
+
+      Theorem 1.  sgd_on_nonneg_smooth_loss_stationary
+                  — SGD on any non-negative smooth loss yields
+                    cumulative grad-norm-squared bounded above by
+                    [2 * loss(θ_0) / η]. Instantiated on
+                    L_separated_sq with [f_lower = 0], this is
+                    the unconditional half of the SGD-on-L_separated_sq
+                    training procedure; the convex-convergence half
+                    awaits item 3. *)
+
+Local Open Scope R_scope.
+
+Section SGDOnNonnegSmoothLoss.
+
+  Variable n : nat.
+  Variable f : list R -> R.
+  Variable grad : list R -> list R.
+  Variable Lsm : R.
+  Hypothesis Lsm_pos : 0 < Lsm.
+  Hypothesis grad_dim :
+    forall theta, length theta = n -> length (grad theta) = n.
+  Hypothesis quad_upper_bound :
+    forall x y, length x = n -> length y = n ->
+      f y <= f x + dot (grad x) (vec_sub y x) +
+              Lsm / 2 * dot (vec_sub y x) (vec_sub y x).
+  Hypothesis f_nonneg : forall theta, length theta = n -> 0 <= f theta.
+
+  (** Theorem 1. The vector SGD analysis (Part VI) instantiated for a
+      non-negative smooth loss with [f_lower = 0]. After [T]
+      iterations from any [theta0] of dimension [n] with step size
+      [eta * Lsm <= 1], the cumulative gradient-norm-squared is
+      bounded by [2 * f(theta0) / eta]. *)
+
+  Theorem sgd_on_nonneg_smooth_loss_stationary :
+    forall theta0 eta T,
+      length theta0 = n ->
+      0 < eta -> eta * Lsm <= 1 ->
+      (eta / 2) * grad_norm_sq_sum grad eta theta0 T <= f theta0.
+  Proof.
+    intros theta0 eta T Hlen Heta_pos HetaLsm.
+    pose proof (sgd_telescoping_vec f grad grad_dim quad_upper_bound
+                  theta0 T Hlen Heta_pos HetaLsm f_nonneg) as H.
+    lra.
+  Qed.
+
+End SGDOnNonnegSmoothLoss.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
