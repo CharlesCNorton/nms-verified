@@ -21,29 +21,6 @@
     consequences for non-maximum suppression and related deduplication
     operations. Single-file monolith.
 
-    Contents:
-
-      Part I.  Lipschitz algebra over the reals.
-        - scalar [Lipschitz L f] with composition / sum / scalar / affine /
-          residual / ReLU.
-        - vector [VecLip L f] under L^infinity, with componentwise lift.
-        - matrix operator-norm Lipschitz bound for [mat_vec].
-
-      Part II. NMS collapse.
-        - [nms_collapse_onepeak]: greedy NMS reduces to threshold filter
-          under the one-peak invariant.
-        - [soft_nms_collapse_onepeak]: any pointwise score-decay collapses
-          identically.
-        - [above_non_violator_survives]: NMS only drops one-peak violators
-          (robustness bound on imperfect invariants).
-        - [one_peak_preserved_by_monotone]: calibration layers preserve
-          the invariant.
-
-      Part III. Domain instantiations (concrete Box and iou).
-        - [heatmap_local_nms_collapse]: keypoint heatmap local-NMS.
-        - [mask_nms_collapse]: instance segmentation mask-NMS.
-        - [detr_collapse]: DETR post-hoc filtering.
-
     Build: rocq makefile -f _CoqProject -o Makefile && make.
 *)
 
@@ -61,7 +38,7 @@ Import ListNotations.
 Set Implicit Arguments.
 
 (** ******************************************************************** *)
-(** *                        Part I. Lipschitz algebra                    *)
+(** *               Section 1. Lipschitz algebra and NMS collapse         *)
 (** ******************************************************************** *)
 
 Local Open Scope R_scope.
@@ -953,9 +930,6 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *                       Part II. NMS collapse                         *)
-(** ******************************************************************** *)
 
 Section Collapse.
 
@@ -2008,9 +1982,6 @@ Section MonotoneTransform.
 
 End MonotoneTransform.
 
-(** ******************************************************************** *)
-(** *                  Part III. Domain instantiations                    *)
-(** ******************************************************************** *)
 
 (** ** Symmetric, bounded IoU function on [Box]. *)
 
@@ -2384,9 +2355,6 @@ Proof.
   intros. apply (nms_collapse_onepeak ibox_iou_sym); assumption.
 Qed.
 
-(** ******************************************************************** *)
-(** *                          Part IV. Extensions                       *)
-(** ******************************************************************** *)
 
 (** ** Reflexivity-at-max for heatmap and ibox IoU. *)
 
@@ -3437,7 +3405,7 @@ Qed.
 (** A bridge instance: assume an L-Lipschitz score head [h] with respect
     to feature distance [d], plus a true-margin and observation-noise
     schema. Concludes [Separated]. The point is that any Lipschitz
-    score head — including the matrix-Lipschitz one from Part I after
+    score head — including the matrix-Lipschitz one after
     quantisation — instantiates this. *)
 
 Theorem lipschitz_bridge_concrete_nat :
@@ -3876,14 +3844,7 @@ Proof.
   apply mask_iou_refl_max; [assumption | apply bitmap_inter_self_eq_union].
 Qed.
 
-(** ** Concrete Part I → Part II weld.
-
-    A closed-term [Separated] certificate produced by feeding a concrete
-    Lipschitz score head through [lipschitz_bridge_substantive]. The score
-    head is the identity on [nat], the L^infinity distance on the feature
-    space is [abs_diff], and observation noise is zero. This validates
-    the bridge end-to-end and demonstrates the weld between Part I's
-    Lipschitz algebra and Part II's [Separated]. *)
+(** ** Closed-term [Separated] certificate from concrete Lipschitz head. *)
 
 Definition c1_box : Type := nat.
 
@@ -3933,16 +3894,7 @@ Proof.
       try (exfalso; apply Hne; reflexivity); cbn; lia.
 Qed.
 
-(** ** End-to-end weld: Real matrix algebra (Part I) → quantization adapter
-    → bridge → [Separated] (Part II).
-
-    [c30_f x := Rmax 0 (3 * x)] is the score head of a 1×1 matrix [[3]]
-    composed with ReLU. Its 3-Lipschitz property is supplied by
-    [lip_compose lip_relu (lip_mult_left 3)] — every link is from Part I.
-    [real_lipschitz_to_nat] discharges the bridge's nat-Lipschitz hypothesis
-    with no additive slack, and [lipschitz_bridge_substantive] yields
-    [Separated]. The chain Part I → Part II is now closed with concrete
-    real-valued matrix algebra at the source. *)
+(** ** Real matrix algebra → quantization → bridge → [Separated]. *)
 
 Local Open Scope R_scope.
 
@@ -4949,7 +4901,7 @@ Proof.
 Qed.
 
 (** ******************************************************************** *)
-(** *      Part V. Separation by construction                            *)
+(** *                Section 2. Bridge to learning                        *)
 (** ******************************************************************** *)
 
 (** Refactor [one_peak] from a hypothesis on the input list to a
@@ -5192,7 +5144,7 @@ Qed.
     "the class is closed under function composition with multiplied
     Lipschitz constants." Combined with the constant function (L=0)
     and identity (L=1) being in the class, this closes the class
-    under the standard Lipschitz algebra — analogous to Part I's real
+    under the standard Lipschitz algebra — analogous to real
     [lip_compose] but lifted to the nat-domain SepRespectingHead
     setting. The class is structurally rich enough to absorb arbitrary
     finite networks of Lipschitz layers. *)
@@ -6410,7 +6362,7 @@ Local Close Scope R_scope.
 
     [arch_M1 := [[3]]] and [arch_M2 := [[2]]] are explicit weight
     matrices for a one-input one-output ReLU network
-    [arch_f x := 2 * Rmax 0 (3 * x)]. Part I's [lip_compose],
+    [arch_f x := 2 * Rmax 0 (3 * x)]. [lip_compose],
     [lip_relu], and [lip_mult_left] yield a Lipschitz constant 6 (=
     [mat_inf_norm arch_M1 * mat_inf_norm arch_M2]). The corresponding
     [arch_head : SepRespectingHead R] inherits this L via the
@@ -6577,9 +6529,6 @@ Section SepFiniteCertify.
 
 End SepFiniteCertify.
 
-(** ******************************************************************** *)
-(** *      Part VI. Constructive training: closing the bridge            *)
-(** ******************************************************************** *)
 
 (** A computable training procedure
     [trained_list D := nms_sorted iou tau D] whose output is
@@ -6682,7 +6631,7 @@ End ConstructiveTraining.
 
 (** ** Iterative training: constructive coordinate descent.
 
-    Replaces Part VI's "precompute and store" with multi-step
+    Replaces "precompute and store" with multi-step
     dynamics. [train_iter] iteratively removes one detection at a
     time, picking each round a "loser" — an above-threshold
     detection with a high-IoU partner whose score is at least as
@@ -7046,11 +6995,8 @@ Proof.
   - right. split; lia.
 Qed.
 
-(** ******************************************************************** *)
-(** *      Part VII. Interval-Bound Propagation Lipschitz                *)
-(** ******************************************************************** *)
 
-(** Part I's [multilayer_lipschitz] gives the operator-norm product
+(** [multilayer_lipschitz] gives the operator-norm product
     [Π mat_inf_norm M_i] as a global Lipschitz bound for an [n]-layer
     ReLU stack. On real architectures the product overestimates the
     true input-space Lipschitz constant by three to six orders of
@@ -7321,7 +7267,7 @@ Qed.
     full network is identically zero on the box, hence locally
     0-Lipschitz. The local bound is six units below the global,
     a constructive instance of the IBP gap that breaks deployable
-    bridges in Part V. *)
+    bridges. *)
 
 Definition ibp_dead_M1 : matrix := [[-3]].
 Definition ibp_dead_M2 : matrix := [[2]].
@@ -7452,9 +7398,6 @@ Qed.
 Local Set Implicit Arguments.
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part VIII. Architectural margin derivation                    *)
-(** ******************************************************************** *)
 
 (** [lipschitz_bridge_substantive]'s precondition includes a margin
     hypothesis on the score head's behavior over high-IoU pairs:
@@ -7582,16 +7525,13 @@ Section DETREquilibriumMargin.
 
 End DETREquilibriumMargin.
 
-(** ******************************************************************** *)
-(** *      Part IX. Real-architecture worked example                     *)
-(** ******************************************************************** *)
 
-(** This part replaces Part V's [c30_D] (2 hand-tuned detections,
+(** This part replaces [c30_D] (2 hand-tuned detections,
     1x1 weights) with two concrete demonstrations on substantially
     larger instances:
 
       (a) IBP-derived local Lipschitz on a 1-layer ReLU network.
-          Using [interval_lipschitz_compose] from Part VII with the
+          Using [interval_lipschitz_compose] with the
           matrix-Lipschitz bound and ReLU's global 1-Lipschitz, the
           layer [v |-> ReLU(3 * v)] is shown 3-Lipschitz on input
           box [0, 10]. The propagated post-matrix box [0, 30] is
@@ -7686,7 +7626,7 @@ Proof.
 Qed.
 
 (** ******************************************************************** *)
-(** *      Part X. Per-layer quantization with slack accumulation        *)
+(** *                Section 3. Training and concentration                *)
 (** ******************************************************************** *)
 
 (** [real_lipschitz_to_nat] absorbs one bit of quantization error
@@ -7829,11 +7769,8 @@ End MultilayerQuantLipschitz.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part XI. Training as SGD on L_separated_sq                   *)
-(** ******************************************************************** *)
 
-(** Part VI's [trained_list := nms_sorted iou tau D] defines
+(** [trained_list := nms_sorted iou tau D] defines
     training as NMS-output-storage: the procedure runs NMS once on
     the input list and stores the output. It does not learn from
     data or minimize any loss.
@@ -7842,7 +7779,7 @@ Local Close Scope R_scope.
     surrogate loss [L_separated_sq], whose per-pair zero-locus
     equals the Separated locus ([pair_violation_sq_zero_iff],
     already proved; full sum-zero-locus is item 4 of remaining
-    work). [sgd_telescoping_vec] (Part VI's vector SGD analysis)
+    work). [sgd_telescoping_vec] (vector SGD analysis)
     gives stationary-point convergence for any non-negative smooth
     loss. Composing with [L_separated_sq_nonneg] (already proved)
     yields the unconditional partial result: SGD on L_separated_sq
@@ -7871,7 +7808,7 @@ Section SGDOnNonnegSmoothLoss.
               Lsm / 2 * dot (vec_sub y x) (vec_sub y x).
   Hypothesis f_nonneg : forall theta, length theta = n -> 0 <= f theta.
 
-  (** Theorem 1. The vector SGD analysis (Part VI) instantiated for a
+  (** Theorem 1. The vector SGD analysis instantiated for a
       non-negative smooth loss with [f_lower = 0]. After [T]
       iterations from any [theta0] of dimension [n] with step size
       [eta * Lsm <= 1], the cumulative gradient-norm-squared is
@@ -7893,9 +7830,6 @@ End SGDOnNonnegSmoothLoss.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part XII. Sample complexity composition formula              *)
-(** ******************************************************************** *)
 
 (** Closes the Chebyshev + Bonferroni chain into a single named
     theorem. For each event in a list, a per-event Chebyshev-style
@@ -7949,11 +7883,8 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part XIII. SGD global convergence under PL inequality          *)
-(** ******************************************************************** *)
 
-(** Part VI's [sgd_telescoping_vec] (and Part XI's wrapper) prove
+(** [sgd_telescoping_vec] (and wrapper) prove
     stationary-point convergence: cumulative grad-norm-squared is
     bounded, so the minimum gradient norm vanishes. This leaves
     open whether the stationary point reached is a global minimum.
@@ -7969,7 +7900,7 @@ Local Close Scope R_scope.
         f(theta_T) - f_lower <= (1 - eta * mu)^T * (f(theta_0) - f_lower)
 
     The geometric factor (1 - eta * mu) gives a rate strictly faster
-    than O(1/T). Composing with Part XI's training infrastructure:
+    than O(1/T). Composing with training infrastructure:
     SGD on a non-negative smooth loss with PL constant mu converges
     geometrically to the global minimum, which for L_separated_sq is
     zero loss, and zero loss equals the Separated locus (Theorem
@@ -8051,14 +7982,11 @@ End ConvergenceUnderPL.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part XIV. L_separated_sq full zero-locus equivalence          *)
-(** ******************************************************************** *)
 
 (** Per-pair, [pair_violation_sq_zero_iff] establishes that the
     squared-hinge surrogate has the same zero locus as the L1-hinge:
     [pair_violation_sq m d d' = 0 <-> pair_violation m d d' = 0]
-    (already proved in Part V).
+    (already proved).
 
     This part lifts the equivalence to the sum:
     [L_separated_sq m D = 0 <-> L_separated m D = 0]. Combined with
@@ -8066,7 +7994,7 @@ Local Close Scope R_scope.
     [L_separated_sq] vanishes exactly on the [Separated] locus, with
     the integer slack [k] given by the real margin [INR k].
 
-    [fold_right_Rplus_zero_iff] (Part VI's helper) provides the key
+    [fold_right_Rplus_zero_iff] (helper) provides the key
     technical fact: a finite sum of non-negative reals vanishes iff
     each summand vanishes. Combined with the elementwise zero-iff of
     pair_violation_sq vs pair_violation, the lifted equivalence
@@ -8133,12 +8061,9 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part XV. Multi-class L_separated with cross-class penalty     *)
-(** ******************************************************************** *)
 
-(** Part V's [L_separated] is single-class. Real detectors emit a
-    score vector (one nat per class) per box; Part IV's [mc_det],
+(** [L_separated] is single-class. Real detectors emit a
+    score vector (one nat per class) per box; [mc_det],
     [mc_one_peak], [mc_no_tie_clash] capture this. [L_mc_separated]
     is the Real-valued loss summing [mc_pair_violation] over every
     pair of detections and every class in [cs].
@@ -8337,10 +8262,10 @@ End MultiClassL.
 Local Close Scope R_scope.
 
 (** ******************************************************************** *)
-(** *      Part XVI. Weighted bipartite matching infrastructure          *)
+(** *           Section 4. Matching and floating-point semantics          *)
 (** ******************************************************************** *)
 
-(** [greedy_match] (Part IV) is unit-weight optimal but not
+(** [greedy_match] is unit-weight optimal but not
     weighted optimal: with cost matrix [b1-g1: 10, b1-g2: 9,
     b2-g1: 9, b2-g2: 0], greedy picks 10 then 0 (total 10) while
     the optimum is 9+9 = 18. The full [O(n^3)] Hungarian algorithm
@@ -8430,12 +8355,8 @@ End HungarianMatching.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *      Part XVII. Binary64 representation and fixed-precision        *)
-(** *                  quantizer                                          *)
-(** ******************************************************************** *)
 
-(** [quantize_unit] (Part V's fixed-precision quantizer) gives [1/2]
+(** [quantize_unit] (fixed-precision quantizer) gives [1/2]
     absolute error at integer precision. For binary64, the IEEE 754
     standard prescribes:
       - [(sign, exponent, mantissa)] representation with 1+11+52 bits
@@ -8502,13 +8423,6 @@ Proof.
   apply fp_quantize_bounded_error. apply b64_eps_pos.
 Qed.
 
-Local Close Scope R_scope.
-
-(** ******************************************************************** *)
-(** *  Part XVIII. IEEE 754 binary64 normal-range relative error          *)
-(** ******************************************************************** *)
-
-
 Local Open Scope R_scope.
 
 Definition b64_q (e : Z) : R := powerRZ 2 (e - 52).
@@ -8558,9 +8472,6 @@ Qed.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *  Part XIX. Brute-force constructive optimal matching                *)
-(** ******************************************************************** *)
 
 
 Local Open Scope R_scope.
@@ -8773,9 +8684,6 @@ End BruteForceMatching.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *  Part XX. Geometric saturating tightness witness                    *)
-(** ******************************************************************** *)
 
 
 Definition geom_tight (n : nat) : list (@det pixel) :=
@@ -9040,10 +8948,6 @@ Proof.
   rewrite Hlt. simpl. lia.
 Qed.
 
-(** ******************************************************************** *)
-(** *  Part XXI. IEEE 754 round-to-nearest-even, subnormals, special      *)
-(** *           values                                                    *)
-(** ******************************************************************** *)
 
 
 Local Open Scope R_scope.
@@ -9321,9 +9225,6 @@ Theorem b64_lt_pinf_l : forall a, a <> b64_nan -> a <> b64_pinf -> b64_lt a b64_
 Proof. destruct a; intros H1 H2; [reflexivity | exfalso; apply H2; reflexivity | reflexivity | exfalso; apply H1; reflexivity]. Qed.
 
 
-(** ******************************************************************** *)
-(** *  Part XXII. Optimal matching via dynamic programming                *)
-(** ******************************************************************** *)
 
 
 Local Open Scope R_scope.
@@ -9638,9 +9539,6 @@ End DPMatching.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *  Part XXIII. LP duality for balanced bipartite assignment           *)
-(** ******************************************************************** *)
 
 
 Local Open Scope R_scope.
@@ -9754,15 +9652,6 @@ Section AssignmentDuality.
 
 End AssignmentDuality.
 
-Local Close Scope R_scope.
-
-(** ******************************************************************** *)
-(** *  Part XXIV. Hungarian-output witness predicate                      *)
-(** ******************************************************************** *)
-
-
-Local Open Scope R_scope.
-
 Section HungarianWitness.
   Variable Box GT : Type.
   Variable cost : Box -> GT -> R.
@@ -9806,9 +9695,6 @@ End HungarianWitness.
 
 Local Close Scope R_scope.
 
-(** ******************************************************************** *)
-(** *  Part XXV. Hoeffding-style concentration via assumed MGF bound      *)
-(** ******************************************************************** *)
 
 
 Local Open Scope R_scope.
@@ -9858,14 +9744,6 @@ Proof.
   unfold lam.
   field. lra.
 Qed.
-
-Local Close Scope R_scope.
-
-(** ******************************************************************** *)
-(** *  Part XXVI. Convexity of exp                                        *)
-(** ******************************************************************** *)
-
-Local Open Scope R_scope.
 
 From Stdlib Require Import MVT.
 
@@ -9956,14 +9834,6 @@ Proof.
     apply Rle_refl.
 Qed.
 
-Local Close Scope R_scope.
-
-(** ******************************************************************** *)
-(** *  Part XXVII. Convexity-based MGF bound for bounded samples         *)
-(** ******************************************************************** *)
-
-Local Open Scope R_scope.
-
 Theorem exp_convex_at_x :
   forall a b x lam,
     a < b -> a <= x <= b ->
@@ -10018,14 +9888,6 @@ Proof.
     + apply Req_le. field. lra.
 Qed.
 
-Local Close Scope R_scope.
-
-(** ******************************************************************** *)
-(** *  Part XXVIII. Hoeffding-style bounds for symmetric centered samples *)
-(** ******************************************************************** *)
-
-Local Open Scope R_scope.
-
 Theorem mgf_symmetric_centered_bound :
   forall (samples : list R) (lam h : R),
     0 < h ->
@@ -10041,6 +9903,42 @@ Proof.
   eapply Rle_trans; [exact Hsum|].
   apply Req_le.
   field. lra.
+Qed.
+
+Theorem second_order_bound :
+  forall (f f' f'' : R -> R) (M a b : R),
+    a < b ->
+    0 <= M ->
+    f a = 0 ->
+    f' a = 0 ->
+    (forall x, a <= x <= b -> derivable_pt_lim f x (f' x)) ->
+    (forall x, a <= x <= b -> derivable_pt_lim f' x (f'' x)) ->
+    (forall x, a <= x <= b -> f'' x <= M) ->
+    f b <= M * (b - a) * (b - a).
+Proof.
+  intros f f' f'' M a b Hab HM Hfa Hfa' Hf_d Hf'_d Hf''_bnd.
+  destruct (MVT_cor2 f f' a b Hab Hf_d) as [c2 [Hf_eq Hc2]].
+  rewrite Hfa in Hf_eq.
+  assert (Hfb : f b = f' c2 * (b - a)) by lra.
+  assert (Hc2_in : a <= c2 <= b) by lra.
+  destruct (Rle_lt_dec c2 a) as [Hc2_le_a | Ha_lt_c2].
+  { exfalso. lra. }
+  destruct (MVT_cor2 f' f'' a c2 Ha_lt_c2
+              (fun x Hx => Hf'_d x (conj (proj1 Hx)
+                                          (Rle_trans _ _ _ (proj2 Hx) (proj2 Hc2_in)))))
+    as [c3 [Hf'c2_eq Hc3]].
+  rewrite Hfa' in Hf'c2_eq.
+  assert (Hf'c2 : f' c2 = f'' c3 * (c2 - a)) by lra.
+  assert (Hc3_in : a <= c3 <= b) by lra.
+  pose proof (Hf''_bnd c3 Hc3_in) as Hf''c3.
+  assert (Hba_pos : 0 < b - a) by lra.
+  assert (Hc2_a_pos : 0 < c2 - a) by lra.
+  rewrite Hfb, Hf'c2.
+  apply Rle_trans with (M * (c2 - a) * (b - a)).
+  - apply Rmult_le_compat_r; [lra|].
+    apply Rmult_le_compat_r; lra.
+  - apply Rmult_le_compat_r; [lra|].
+    apply Rmult_le_compat_l; lra.
 Qed.
 
 Local Close Scope R_scope.
