@@ -10463,22 +10463,31 @@ Section BitmaskMatching.
 
   Definition all_true (n : nat) : list bool := repeat true n.
 
-  (** Indexed maximum over GT positions where the mask is [true]. *)
+  (** Indexed maximum over GT positions where the mask is [true]. The
+      accumulator [prefix] holds the already-consumed bits in reverse,
+      so the [false :: tail]-flipped mask is reconstructible at each
+      head step as [rev prefix ++ false :: tail]. *)
 
-  Fixpoint mask_max_R (boxes : list Box) (gts : list GT)
-                       (mask : list bool) (i : nat)
-                       (rec : list bool -> R)
-                       (b : Box) : R :=
+  Fixpoint mask_max_R_aux (boxes : list Box) (mask : list bool) (gts : list GT)
+                           (prefix : list bool)
+                           (rec : list bool -> R)
+                           (b : Box) : R :=
     match mask, gts with
     | [], _ => 0
     | _, [] => 0
     | true :: ms, g :: rest =>
-        let head_val := cost b g + rec (mask_remove mask i) in
-        let tail_val := mask_max_R boxes rest ms (S i) rec b in
-        Rmax head_val tail_val
+        let modified_mask := rev prefix ++ false :: ms in
+        Rmax (cost b g + rec modified_mask)
+             (mask_max_R_aux boxes ms rest (true :: prefix) rec b)
     | false :: ms, _ :: rest =>
-        mask_max_R boxes rest ms (S i) rec b
+        mask_max_R_aux boxes ms rest (false :: prefix) rec b
     end.
+
+  Definition mask_max_R (boxes : list Box) (gts : list GT)
+                         (mask : list bool)
+                         (rec : list bool -> R)
+                         (b : Box) : R :=
+    mask_max_R_aux boxes mask gts [] rec b.
 
   Fixpoint bitmask_dp (boxes : list Box) (gts : list GT)
                        (mask : list bool) : R :=
@@ -10488,7 +10497,7 @@ Section BitmaskMatching.
         match gts with
         | [] => 0
         | _ =>
-            mask_max_R boxes gts mask 0
+            mask_max_R boxes gts mask
               (fun m => bitmask_dp rest gts m) b
         end
     end.
@@ -10773,6 +10782,211 @@ Proof.
     apply (@powerRZ_2_mono). unfold b64_bias. lia.
   - eapply Rlt_le_trans; [exact Hhi|].
     apply (@powerRZ_2_mono). unfold b64_bias. lia.
+Qed.
+
+(** ** Constructive encoder for the normal range.
+
+    Given [|x|] in the normal interval [[2^(e-1023), 2^(e-1022))],
+    [b64_encode_normal sign e x] returns the [b64_repr] whose mantissa
+    is [floor((|x|/2^(e-1023) - 1) * 2^52)] (clamped to nonneg). The
+    encoder is well-formed (mantissa in range) and the round-trip
+    error bound [|b64_repr_to_R (encode ...) - x| <= 2^(e-1023-52)]
+    follows directly from [Int_part]'s 1-unit floor accuracy. *)
+
+Definition b64_encode_normal (sign : bool) (e : Z) (x : R) : b64_repr :=
+  let frac := Rabs x / powerRZ 2 (e - b64_bias) - 1 in
+  let m_R := frac * 2 ^ 52 in
+  Build_b64_repr sign e (Z.to_nat (Z.max 0 (Int_part m_R))).
+
+Lemma b64_encode_exponent :
+  forall sign e x, b64_exponent (b64_encode_normal sign e x) = e.
+Proof. intros. reflexivity. Qed.
+
+Lemma b64_encode_sign :
+  forall sign e x, b64_sign (b64_encode_normal sign e x) = sign.
+Proof. intros. reflexivity. Qed.
+
+(** Mantissa [INR m] equals [IZR (Z.max 0 (Int_part m_R))]. *)
+
+Lemma INR_Z_to_nat_max_0 :
+  forall z : Z, INR (Z.to_nat (Z.max 0 z)) = IZR (Z.max 0 z).
+Proof.
+  intros z. rewrite INR_IZR_INZ. f_equal.
+  rewrite Z2Nat.id; [reflexivity|lia].
+Qed.
+
+(** Mantissa bound: encoded mantissa value (as a real) is at most
+    [2^52 - 1]. Direct R-side reasoning: [Int_part m_R <= m_R < 2^52],
+    so [Z.max 0 (Int_part m_R) <= 2^52 - 1] when [|x| < 2^(e-1022)]. *)
+
+Lemma b64_encode_mantissa_bound :
+  forall sign e x,
+    Rabs x < powerRZ 2 (e - b64_bias + 1) ->
+    INR (b64_mantissa (b64_encode_normal sign e x)) <= 2 ^ 52 - 1.
+Proof.
+  intros sign e x Hhi. unfold b64_encode_normal. simpl.
+  rewrite INR_Z_to_nat_max_0.
+  set (frac := Rabs x / powerRZ 2 (e - b64_bias) - 1).
+  set (m_R := frac * 2 ^ 52).
+  pose proof (powerRZ_2_pos (e - b64_bias)) as Hpow_pos.
+  pose proof (base_Int_part m_R) as [Hint_lo Hint_hi].
+  assert (Hpow52_pos : 0 < 2 ^ 52) by (apply pow_lt; lra).
+  (* Need: |x| < 2^(e - 1023 + 1) = 2 * 2^(e-1023) implies frac < 1. *)
+  assert (Hfrac_hi : frac < 1).
+  { unfold frac. apply Rmult_lt_reg_r with (r := powerRZ 2 (e - b64_bias));
+      [exact Hpow_pos|].
+    replace ((Rabs x / powerRZ 2 (e - b64_bias) - 1) *
+             powerRZ 2 (e - b64_bias))
+       with (Rabs x - powerRZ 2 (e - b64_bias)) by (field; lra).
+    replace (1 * powerRZ 2 (e - b64_bias)) with (powerRZ 2 (e - b64_bias)) by lra.
+    replace (powerRZ 2 (e - b64_bias + 1))
+       with (2 * powerRZ 2 (e - b64_bias)) in Hhi.
+    - lra.
+    - replace (e - b64_bias + 1)%Z with ((e - b64_bias) + 1)%Z by lia.
+      rewrite powerRZ_add by lra. simpl. lra. }
+  (* Hence m_R = frac * 2^52 < 2^52. *)
+  assert (Hm_R_hi : m_R < 2 ^ 52).
+  { unfold m_R. apply Rmult_lt_reg_r with (r := / 2 ^ 52);
+      [apply Rinv_0_lt_compat; exact Hpow52_pos|].
+    rewrite Rmult_assoc, Rinv_r by lra.
+    rewrite Rmult_1_r. lra. }
+  (* Hint_lo says IZR (Int_part m_R) <= m_R. Hence Int_part m_R < 2^52
+     in IZR, hence Int_part m_R <= 2^52 - 1 in Z, after IZR_lt and
+     converting; in IZR, IZR (Int_part m_R) <= 2^52 - 1. *)
+  assert (Hipart_lt : IZR (Int_part m_R) < 2 ^ 52).
+  { eapply Rle_lt_trans; [exact Hint_lo | exact Hm_R_hi]. }
+  assert (Hpow_int : 2 ^ 52 = IZR (2 ^ 52)%Z).
+  { rewrite pow_IZR. simpl. lra. }
+  assert (Hipart_lt_Z : (Int_part m_R < 2 ^ 52)%Z).
+  { apply lt_IZR. rewrite <- Hpow_int. exact Hipart_lt. }
+  (* Z.max 0 (Int_part m_R) <= 2^52 - 1: both args <= 2^52 - 1. *)
+  assert (Hmax_le_Z : (Z.max 0 (Int_part m_R) <= 2 ^ 52 - 1)%Z).
+  { apply Z.max_lub; lia. }
+  apply IZR_le in Hmax_le_Z.
+  rewrite minus_IZR in Hmax_le_Z.
+  rewrite <- Hpow_int in Hmax_le_Z.
+  exact Hmax_le_Z.
+Qed.
+
+(** Encoded repr is well-formed. *)
+
+Theorem b64_encode_normal_well_formed :
+  forall sign e x,
+    (b64_normal_emin <= e <= b64_normal_emax)%Z ->
+    Rabs x < powerRZ 2 (e - b64_bias + 1) ->
+    b64_repr_normal (b64_encode_normal sign e x).
+Proof.
+  intros sign e x He Hhi. split.
+  - rewrite b64_encode_exponent. assumption.
+  - apply b64_encode_mantissa_bound. assumption.
+Qed.
+
+(** Encode-decode round-trip closeness. The decoded magnitude is
+    within [2^(e-1023-52) = 2^(-53) * 2^(e-1023)] of [|x|], which after
+    pairing with [|x| >= 2^(e-1023)] gives a relative error of at most
+    [2^(-52)] (slightly looser than round-to-nearest's [2^(-53)] since
+    this encoder uses floor). *)
+
+Theorem b64_encode_decode_close :
+  forall sign e x,
+    (b64_normal_emin <= e <= b64_normal_emax)%Z ->
+    powerRZ 2 (e - b64_bias) <= Rabs x < powerRZ 2 (e - b64_bias + 1) ->
+    sign = (if Rlt_dec x 0 then true else false) ->
+    Rabs (b64_repr_to_R (b64_encode_normal sign e x) - x) <=
+      powerRZ 2 (e - b64_bias - 52).
+Proof.
+  intros sign e x He [Hlo Hhi] Hsign.
+  set (p := powerRZ 2 (e - b64_bias)) in *.
+  pose proof (powerRZ_2_pos (e - b64_bias)) as Hp_pos. fold p in Hp_pos.
+  set (frac := Rabs x / p - 1) in *.
+  assert (Hfrac_lo : 0 <= frac).
+  { unfold frac. apply Rmult_le_reg_r with (r := p); [exact Hp_pos|].
+    replace ((Rabs x / p - 1) * p) with (Rabs x - p) by (field; lra).
+    replace (0 * p) with 0 by ring. lra. }
+  assert (Hfrac_hi : frac < 1).
+  { unfold frac. apply Rmult_lt_reg_r with (r := p); [exact Hp_pos|].
+    replace ((Rabs x / p - 1) * p) with (Rabs x - p) by (field; lra).
+    replace (1 * p) with p by lra.
+    replace (powerRZ 2 (e - b64_bias + 1)) with (2 * p) in Hhi
+      by (unfold p;
+          replace (e - b64_bias + 1)%Z with ((e - b64_bias) + 1)%Z by lia;
+          rewrite powerRZ_add by lra; simpl; lra).
+    lra. }
+  set (m_R := frac * 2 ^ 52).
+  assert (Hpow52_pos : 0 < 2 ^ 52) by (apply pow_lt; lra).
+  assert (Hm_R_lo : 0 <= m_R)
+    by (unfold m_R; apply Rmult_le_pos; [exact Hfrac_lo | lra]).
+  assert (Hm_R_hi : m_R < 2 ^ 52).
+  { unfold m_R. apply Rmult_lt_reg_r with (r := / 2 ^ 52);
+      [apply Rinv_0_lt_compat; exact Hpow52_pos|].
+    rewrite Rmult_assoc, Rinv_r by lra.
+    rewrite Rmult_1_r. lra. }
+  pose proof (base_Int_part m_R) as [Hint_lo Hint_hi].
+  (* m_R >= 0, so Int_part m_R > -1; since integer, >= 0. *)
+  assert (HIntp_gt : -1 < IZR (Int_part m_R)) by lra.
+  assert (HIntp_gt_Z : (-1 < Int_part m_R)%Z).
+  { apply lt_IZR. simpl. lra. }
+  assert (HIntp_lo_Z : (0 <= Int_part m_R)%Z) by lia.
+  assert (Hmax_eq : Z.max 0 (Int_part m_R) = Int_part m_R).
+  { apply Z.max_r. assumption. }
+  unfold b64_repr_to_R, b64_encode_normal.
+  cbn [b64_sign b64_exponent b64_mantissa].
+  change (Rabs x / powerRZ 2 (e - b64_bias) - 1) with frac.
+  change (frac * 2 ^ 52) with m_R.
+  rewrite Hmax_eq.
+  rewrite INR_IZR_INZ.
+  rewrite Z2Nat.id by exact HIntp_lo_Z.
+  set (s := if sign then -1 else 1).
+  fold p.
+  set (decoded := s * (1 + IZR (Int_part m_R) / 2 ^ 52) * p).
+  assert (Habs_s : Rabs s = 1).
+  { unfold s. destruct sign.
+    - replace (-1) with (-(1)) by lra. rewrite Rabs_Ropp, Rabs_R1. reflexivity.
+    - apply Rabs_R1. }
+  assert (Hxabs_split : Rabs x = p + frac * p)
+    by (unfold frac; field; lra).
+  assert (Hsx : x = s * Rabs x).
+  { unfold s. subst sign. destruct (Rlt_dec x 0) as [Hxlt | Hxge].
+    - rewrite (Rabs_left _ Hxlt). lra.
+    - assert (0 <= x) by lra. rewrite Rabs_right by lra. lra. }
+  assert (Hgoal_step :
+    decoded - x = s * ((IZR (Int_part m_R) / 2 ^ 52) * p - frac * p)).
+  { unfold decoded. rewrite Hsx, Hxabs_split.
+    replace (s * (p + frac * p))
+       with (s * p + s * (frac * p)) by ring. ring. }
+  rewrite Hgoal_step.
+  rewrite Rabs_mult, Habs_s, Rmult_1_l.
+  assert (Hdiff_form :
+    (IZR (Int_part m_R) / 2 ^ 52) * p - frac * p =
+    (IZR (Int_part m_R) - m_R) / 2 ^ 52 * p).
+  { unfold m_R. field. }
+  rewrite Hdiff_form.
+  rewrite Rabs_mult.
+  rewrite (Rabs_pos_eq p) by lra.
+  assert (Habs_div :
+    Rabs ((IZR (Int_part m_R) - m_R) / 2 ^ 52) =
+    Rabs (IZR (Int_part m_R) - m_R) / 2 ^ 52).
+  { unfold Rdiv. rewrite Rabs_mult.
+    rewrite (Rabs_pos_eq (/ 2 ^ 52)) by (left; apply Rinv_0_lt_compat; lra).
+    reflexivity. }
+  rewrite Habs_div.
+  assert (Habs_le_1 : Rabs (IZR (Int_part m_R) - m_R) <= 1).
+  { unfold Rabs. destruct (Rcase_abs (IZR (Int_part m_R) - m_R)); lra. }
+  assert (Hdiv_le : Rabs (IZR (Int_part m_R) - m_R) / 2 ^ 52 <= / 2 ^ 52).
+  { apply Rmult_le_reg_r with (r := 2 ^ 52); [exact Hpow52_pos|].
+    unfold Rdiv. rewrite Rmult_assoc, Rinv_l by lra. rewrite Rmult_1_r.
+    exact Habs_le_1. }
+  apply Rle_trans with (/ 2 ^ 52 * p).
+  - apply Rmult_le_compat_r; [lra | exact Hdiv_le].
+  - assert (Hgoal_pow : / 2 ^ 52 * p = powerRZ 2 (e - b64_bias - 52)).
+    { unfold p.
+      replace (e - b64_bias - 52)%Z
+         with ((e - b64_bias) + (-52))%Z by lia.
+      rewrite powerRZ_add by lra.
+      assert (Hneg52 : powerRZ 2 (-52) = / 2 ^ 52).
+      { simpl. unfold Z.pow_pos. simpl. unfold Pos.iter. simpl. field. }
+      rewrite Hneg52. lra. }
+    rewrite Hgoal_pow. apply Rle_refl.
 Qed.
 
 Local Close Scope R_scope.
