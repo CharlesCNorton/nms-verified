@@ -5765,6 +5765,59 @@ Proof.
     rewrite Ha0, Hb0. lra.
 Qed.
 
+(** ** Squared-hinge gradient with explicit smoothness constant.
+
+    The gap term in [pair_violation_sq] has the form
+    [(Rmax 0 (m - g))^2] where [g] is the score-gap. Its gradient
+    w.r.t. [g] is the continuous function [-2 * Rmax 0 (m - g)] —
+    [-2 (m - g)] in the active region and [0] in the inactive region,
+    with the two branches matching at the kink [g = m]. This gradient
+    is Lipschitz with constant [2]: [|grad x - grad y| <= 2 * |x - y|].
+    Concretely instantiates the abstract [Lsm] in [Section SGDDescent]
+    by [2], so any SGD step on a single squared-hinge term satisfies
+    the descent inequality with [eta * 2 <= 1] (i.e., [eta <= 1/2]).
+    The full [L_separated_sq] gradient is the sum over distinct
+    high-IoU pairs; smoothness composes additively. *)
+
+Definition sq_hinge_at (m x : R) : R := (Rmax 0 (m - x))^2.
+
+Definition sq_hinge_deriv (m x : R) : R := -2 * Rmax 0 (m - x).
+
+Theorem sq_hinge_lipschitz_grad :
+  forall m x y, Rabs (sq_hinge_deriv m x - sq_hinge_deriv m y)%R <=
+                2 * Rabs (x - y).
+Proof.
+  intros m x y. unfold sq_hinge_deriv.
+  pose proof (lip_bound lip_relu (m - x) (m - y)) as Hrelu.
+  rewrite Rmult_1_l in Hrelu.
+  set (a := Rmax 0 (m - x)) in *.
+  set (b := Rmax 0 (m - y)) in *.
+  replace (-2 * a - -2 * b)%R with (-2 * (a - b))%R by lra.
+  rewrite Rabs_mult.
+  assert (Hr2 : Rabs (-2) = 2).
+  { unfold Rabs. destruct (Rcase_abs (-2)); lra. }
+  rewrite Hr2.
+  rewrite (Rabs_minus_sym (m - x) (m - y)) in Hrelu.
+  replace (m - y - (m - x))%R with (x - y) in Hrelu by lra.
+  nra.
+Qed.
+
+Theorem sq_hinge_at_inactive_zero :
+  forall m x, m <= x -> sq_hinge_at m x = 0.
+Proof.
+  intros m x H. unfold sq_hinge_at.
+  rewrite Rmax_left by lra.
+  unfold pow. lra.
+Qed.
+
+Theorem sq_hinge_deriv_inactive_zero :
+  forall m x, m <= x -> sq_hinge_deriv m x = 0.
+Proof.
+  intros m x H. unfold sq_hinge_deriv.
+  rewrite Rmax_left by lra.
+  lra.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ** Real-valued gradient descent convergence.
