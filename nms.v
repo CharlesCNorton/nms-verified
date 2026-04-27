@@ -7620,6 +7620,113 @@ Section DETREquilibriumMargin.
 
 End DETREquilibriumMargin.
 
+(** ******************************************************************** *)
+(** *      Part IX. Real-architecture worked example                     *)
+(** ******************************************************************** *)
+
+(** This part replaces Part V's [c30_D] (2 hand-tuned detections,
+    1x1 weights) with two concrete demonstrations on substantially
+    larger instances:
+
+      (a) IBP-derived local Lipschitz on a 1-layer ReLU network.
+          Using [interval_lipschitz_compose] from Part VII with the
+          matrix-Lipschitz bound and ReLU's global 1-Lipschitz, the
+          layer [v |-> ReLU(3 * v)] is shown 3-Lipschitz on input
+          box [0, 10]. The propagated post-matrix box [0, 30] is
+          computed and discharged by [nra].
+
+      (b) An executable [Separated] certificate on a 20-detection
+          batch. With [c1_iou] returning 60 for distinct nat boxes
+          and [tau = 70], the high-IoU branch is structurally
+          empty, so [Separated_check] evaluates to [true] by
+          [vm_compute] and [Separated] follows via
+          [Separated_check_correct].
+
+    Theorems delivered:
+
+      Theorem 1.  e20_apply_layer_local_lipschitz   (IBP via Part VII)
+      Theorem 2.  e20_separated_check_true          (vm_compute)
+      Theorem 3.  e20_separated_at_slack_one        (lift to Separated) *)
+
+(** ** Concrete 1-layer ReLU network with IBP-derived L. *)
+
+Local Open Scope R_scope.
+
+Definition e20_M : matrix := [[3]].
+Definition e20_input_lo : list R := [0].
+Definition e20_input_hi : list R := [10].
+Definition e20_relu_input_lo : list R := [0].
+Definition e20_relu_input_hi : list R := [30].
+
+Lemma e20_M_norm : mat_inf_norm e20_M = 3.
+Proof.
+  unfold e20_M, mat_inf_norm. simpl.
+  rewrite Rabs_right by lra. rewrite Rplus_0_r.
+  apply Rmax_left. lra.
+Qed.
+
+Lemma e20_M_propagates :
+  forall u, in_box e20_input_lo e20_input_hi u ->
+            in_box e20_relu_input_lo e20_relu_input_hi (mat_vec e20_M u).
+Proof.
+  intros u Hu.
+  unfold e20_input_lo, e20_input_hi, e20_relu_input_lo, e20_relu_input_hi in *.
+  destruct u as [|x [|y rest]]; simpl in Hu; try tauto.
+  destruct Hu as [[Hxlo Hxhi] _].
+  unfold e20_M; cbn [mat_vec dot].
+  rewrite Rplus_0_r.
+  simpl. split; [|exact I]. split; nra.
+Qed.
+
+(** Theorem 1. IBP-derived local Lipschitz constant for the layer. *)
+
+Theorem e20_apply_layer_local_lipschitz :
+  interval_lipschitz (apply_layer e20_M) e20_input_lo e20_input_hi 3.
+Proof.
+  unfold apply_layer.
+  pose proof (mat_vec_interval_lipschitz e20_M e20_input_lo e20_input_hi) as Hmat.
+  rewrite e20_M_norm in Hmat.
+  pose proof (relu_interval_lipschitz e20_relu_input_lo e20_relu_input_hi) as Hrelu.
+  pose proof (interval_lipschitz_compose
+                (mat_vec e20_M) apply_relu_vec
+                3 1 e20_input_lo e20_input_hi
+                e20_relu_input_lo e20_relu_input_hi
+                Hmat Hrelu e20_M_propagates) as Hcomp.
+  rewrite Rmult_1_r in Hcomp.
+  exact Hcomp.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Executable [Separated] certificate on a 20-detection batch. *)
+
+Definition e20_D : list (@det c1_box) :=
+  [ mkDet 100 0; mkDet 95 1; mkDet 90 2; mkDet 85 3; mkDet 80 4;
+    mkDet 75 5; mkDet 70 6; mkDet 65 7; mkDet 60 8; mkDet 55 9;
+    mkDet 50 10; mkDet 45 11; mkDet 40 12; mkDet 35 13; mkDet 30 14;
+    mkDet 25 15; mkDet 20 16; mkDet 15 17; mkDet 10 18; mkDet 5 19 ].
+
+(** [c1_iou] returns 60 for distinct nat boxes. With [tau = 70],
+    every distinct pair has [iou = 60 < 70 = tau], so the high-IoU
+    branch is structurally empty and the decidable [Separated_check]
+    evaluates to [true] vacuously. *)
+
+(** Theorem 2. Executable Separated certificate via [vm_compute]. *)
+
+Theorem e20_separated_check_true :
+  Separated_check c1_iou 70 100 Nat.eq_dec 1 e20_D = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Theorem 3. Lift the decidable check to [Separated] via the
+    correctness theorem. *)
+
+Theorem e20_separated_at_slack_one :
+  Separated c1_iou 70 100 1 e20_D.
+Proof.
+  apply (proj1 (Separated_check_correct c1_iou 70 100 Nat.eq_dec 1 e20_D)).
+  exact e20_separated_check_true.
+Qed.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
