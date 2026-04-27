@@ -10299,6 +10299,92 @@ Qed.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *  Part XXVII. Convexity-based MGF bound for bounded samples         *)
+(** ******************************************************************** *)
+
+(** Direct application of Part XXVI's [exp_convex] to the empirical
+    moment-generating function over a list with values in [a, b]:
+
+      mgf_uniform samples lam <=
+        ((b - mean) / (b - a)) * exp(lam * a)
+      + ((mean - a) / (b - a)) * exp(lam * b)
+
+    where [mean = expect_uniform samples]. For [mean = 0] (centered
+    samples), the bound becomes
+    [(b/(b-a)) exp(lam*a) + (-a/(b-a)) exp(lam*b)].
+
+    This is the convexity step of Hoeffding's lemma; the analytic
+    completion (bounding the RHS by [exp(lam^2 (b-a)^2 / 8)]) requires
+    Taylor's theorem with Lagrange remainder, derivable from Rolle but
+    not provided here. The convexity step is the substantive content;
+    the closed-form Gaussian bound is a tightening.
+
+    Theorem delivered:
+
+      Theorem 1.  exp_convex_at_x — pointwise convexity bound for
+                  [exp(lam*x)] on [a, b].
+      Theorem 2.  mgf_uniform_convexity_bound — empirical-MGF bound
+                  via convexity. *)
+
+Local Open Scope R_scope.
+
+Theorem exp_convex_at_x :
+  forall a b x lam,
+    a < b -> a <= x <= b ->
+    exp (lam * x) <=
+    ((b - x) / (b - a)) * exp (lam * a) + ((x - a) / (b - a)) * exp (lam * b).
+Proof.
+  intros a b x lam Hab [Hax Hxb].
+  set (mu := (b - x) / (b - a)).
+  assert (Hmu_lo : 0 <= mu).
+  { unfold mu, Rdiv. apply Rmult_le_pos.
+    - lra.
+    - left. apply Rinv_0_lt_compat. lra. }
+  assert (Hmu_hi : mu <= 1).
+  { unfold mu. apply Rmult_le_reg_r with (r := b - a); [lra|].
+    unfold Rdiv. rewrite Rmult_assoc.
+    rewrite Rinv_l by lra. lra. }
+  pose proof (@exp_convex (lam * a) (lam * b) mu (conj Hmu_lo Hmu_hi)) as Hcvx.
+  replace (lam * x) with (mu * (lam * a) + (1 - mu) * (lam * b)).
+  - eapply Rle_trans; [exact Hcvx|].
+    apply Req_le.
+    unfold mu.
+    replace (1 - (b - x) / (b - a)) with ((x - a) / (b - a)) by (field; lra).
+    reflexivity.
+  - unfold mu. field. lra.
+Qed.
+
+(** ** Sum-form MGF convexity bound (no division by N).
+    The empirical-mean form follows by dividing by [INR (length samples)]. *)
+
+Theorem mgf_sum_convexity_bound :
+  forall (samples : list R) (lam a b : R),
+    a < b ->
+    (forall x, In x samples -> a <= x <= b) ->
+    fold_right Rplus 0 (map (fun x => exp (lam * x)) samples) <=
+    ((b * INR (length samples) - fold_right Rplus 0 samples) / (b - a))
+      * exp (lam * a)
+    + ((fold_right Rplus 0 samples - a * INR (length samples)) / (b - a))
+      * exp (lam * b).
+Proof.
+  intros samples lam a b Hab Hbnd.
+  induction samples as [|x rest IH].
+  - simpl. cbn [INR]. apply Req_le. field. lra.
+  - pose proof (Hbnd x (or_introl eq_refl)) as Hx_bnd.
+    pose proof (@exp_convex_at_x a b x lam Hab Hx_bnd) as Hcvx.
+    assert (Hrest_bnd : forall y, In y rest -> a <= y <= b)
+      by (intros y Hy; apply Hbnd; right; assumption).
+    specialize (IH Hrest_bnd).
+    cbn [map fold_right length].
+    rewrite S_INR.
+    eapply Rle_trans.
+    + apply Rplus_le_compat; [exact Hcvx | exact IH].
+    + apply Req_le. field. lra.
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
