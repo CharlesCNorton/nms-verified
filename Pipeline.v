@@ -649,3 +649,126 @@ Extraction "nms_pipeline.ml"
   train_iter find_loser remove_one
   geom_tight build_tight cN_D
   quantise quantise_det.
+
+(** ** Section 11. End-to-end: Real-side training to NMS-collapse. *)
+
+Local Open Scope R_scope.
+
+Definition real_calibrated_head
+    (f : R -> R) (L : R) (Ln : nat) (eps_n m_n : nat)
+    (Hlip : Lipschitz L f)
+    (HL_le_Ln : L <= INR Ln)
+    (Hf_nn : forall x, 0 <= f x)
+    (Hbnd : (2 * Ln * eps_n <= m_n)%nat)
+    : SepRespectingHead R.
+Proof.
+  refine (mkSepHead (rnat_h 1 f) (rnat_dist 1) Ln eps_n m_n _ Hbnd).
+  apply (@real_lipschitz_to_nat f L 1 Ln Hlip Rlt_0_1 HL_le_Ln Hf_nn).
+Defined.
+
+Arguments real_calibrated_head {f L Ln eps_n m_n} Hlip HL_le_Ln Hf_nn Hbnd.
+
+Lemma real_calibrated_head_slack :
+  forall f L Ln eps_n m_n Hlip HL_le_Ln Hf_nn Hbnd,
+    sep_effective_slack
+      (@real_calibrated_head f L Ln eps_n m_n Hlip HL_le_Ln Hf_nn Hbnd)
+    = (m_n - 2 * Ln * eps_n)%nat.
+Proof.
+  intros. unfold sep_effective_slack, real_calibrated_head; cbn. reflexivity.
+Qed.
+
+Local Close Scope R_scope.
+
+Section EndToEnd.
+
+  Variable Box : Type.
+  Variable iou : Box -> Box -> nat.
+  Hypothesis iou_sym : forall a b, iou a b = iou b a.
+  Variable tau theta : nat.
+
+  Theorem real_calibrated_yields_collapse :
+    forall (f : R -> R) (L : R) (Ln : nat) (eps_n m_n : nat)
+           (Hlip : Lipschitz L f)
+           (HL_le_Ln : (L <= INR Ln)%R)
+           (Hf_nn : forall x, (0 <= f x)%R)
+           (Hbnd : (2 * Ln * eps_n <= m_n)%nat)
+           (true_feat obs_feat : @det Box -> R) (D : list (@det Box)),
+      (1 <= m_n - 2 * Ln * eps_n)%nat ->
+      NoDup D ->
+      sorted_desc D ->
+      sep_apply iou tau theta
+        (real_calibrated_head Hlip HL_le_Ln Hf_nn Hbnd) obs_feat true_feat D ->
+      filter_above theta (nms_sorted iou tau D) = filter_above theta D.
+  Proof.
+    intros f L Ln eps_n m_n Hlip HL_le_Ln Hf_nn Hbnd
+           true_feat obs_feat D Hslack Hnd Hsd Happ.
+    apply (sep_respecting_implies_collapse iou_sym Hnd Hsd Happ).
+    unfold real_calibrated_head; cbn [sep_m sep_L sep_eps].
+    exact Hslack.
+  Qed.
+
+  Theorem squared_hinge_loss_zero_yields_collapse :
+    forall (box_eq_dec : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+           (D : list (@det Box)) (k : nat),
+      NoDup D ->
+      sorted_desc D ->
+      (1 <= k)%nat -> (k <= theta)%nat ->
+      (L_separated_sq iou tau theta box_eq_dec (INR k) D = 0)%R ->
+      filter_above theta (nms_sorted iou tau D) = filter_above theta D.
+  Proof.
+    intros box_eq_dec D k Hnd Hsd Hk_pos Hk_le_theta Hloss.
+    pose proof (proj1 (@L_separated_sq_zero_iff_separated_general
+                         Box iou tau theta box_eq_dec D k
+                         Hk_pos Hk_le_theta) Hloss)
+      as Hsep_k.
+    pose proof (@Separated_mono Box iou tau theta 1%nat k D Hk_pos Hsep_k)
+      as Hsep_1.
+    apply (nms_collapse_onepeak iou_sym Hnd Hsd
+             (separated_implies_one_peak Hsep_1)
+             (separated_implies_no_tie_clash Hsep_1)).
+  Qed.
+
+End EndToEnd.
+
+Theorem scalar_squared_hinge_sgd_yields_zero_loss :
+  forall (m : R) (theta0 : list R),
+    length theta0 = 1%nat ->
+    (sh_loss m (sgd_iterate_vec (sh_grad m) (Rdiv 1 2) theta0 1%nat) = 0)%R.
+Proof. exact squared_hinge_sgd_optimal_step. Qed.
+
+Theorem real_training_to_collapse :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau theta : nat)
+           (f : R -> R) (L : R) (Ln : nat) (eps_n m_n : nat)
+           (Hlip : Lipschitz L f)
+           (HL_le_Ln : (L <= INR Ln)%R)
+           (Hf_nn : forall x, (0 <= f x)%R)
+           (Hbnd : (2 * Ln * eps_n <= m_n)%nat)
+           (true_feat obs_feat : @det Box -> R) (D : list (@det Box)),
+      (1 <= m_n - 2 * Ln * eps_n)%nat ->
+      NoDup D ->
+      sorted_desc D ->
+      sep_apply iou tau theta
+        (real_calibrated_head Hlip HL_le_Ln Hf_nn Hbnd) obs_feat true_feat D ->
+      filter_above theta (nms_sorted iou tau D) = filter_above theta D.
+Proof.
+  intros Box iou iou_sym.
+  exact (@real_calibrated_yields_collapse Box iou iou_sym).
+Qed.
+
+Theorem scalar_pair_sgd_to_collapse_endpoint :
+  forall (Box : Type) (iou : Box -> Box -> nat),
+    (forall a b, iou a b = iou b a) ->
+    forall (tau theta : nat)
+           (box_eq_dec : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+           (D : list (@det Box)) (k : nat),
+      NoDup D ->
+      sorted_desc D ->
+      (1 <= k)%nat -> (k <= theta)%nat ->
+      (L_separated_sq iou tau theta box_eq_dec (INR k) D = 0)%R ->
+      filter_above theta (nms_sorted iou tau D) = filter_above theta D.
+Proof.
+  intros Box iou iou_sym.
+  exact (@squared_hinge_loss_zero_yields_collapse Box iou iou_sym).
+Qed.
