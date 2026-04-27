@@ -8498,6 +8498,86 @@ End HungarianMatching.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XVII. Binary64 representation and fixed-precision        *)
+(** *                  quantizer                                          *)
+(** ******************************************************************** *)
+
+(** [quantize_unit] (Part V's fixed-precision quantizer) gives [1/2]
+    absolute error at integer precision. For binary64, the IEEE 754
+    standard prescribes:
+      - [(sign, exponent, mantissa)] representation with 1+11+52 bits
+      - round-to-nearest-even tie-breaking
+      - relative error [|q(x) - x| <= 2^{-53} * |x|] on normal range
+      - subnormal handling at absolute error [2^{-1074}]
+      - explicit modeling of [+inf], [-inf], [NaN] as an option type
+
+    This part delivers the structural representation
+    ([b64_repr] record with the standard field widths) and a
+    parametric fixed-precision quantizer [fp_quantize q] generalising
+    [quantize_unit]. The relative-error scaling, subnormal range, and
+    special-value option type are the remaining pieces of full IEEE
+    754 — significant additional work each.
+
+    Theorems delivered:
+
+      Theorem 1.  fp_quantize_bounded_error
+                  — absolute error [<= q/2] for any precision [q]
+      Theorem 2.  b64_quantize_bounded_error
+                  — instantiation at the binary64 mantissa scale
+                    [2^{-52}], absolute error [<= 2^{-53}] *)
+
+Record b64_repr : Type := {
+  b64_sign     : bool;     (* 1 bit:   true = negative, false = non-negative *)
+  b64_exponent : Z;        (* 11 bits: biased exponent in 0..2047 *)
+  b64_mantissa : nat       (* 52 bits: integer mantissa in 0..2^52 - 1 *)
+}.
+
+Local Open Scope R_scope.
+
+Definition fp_quantize (q x : R) : R := quantize_unit (x / q) * q.
+
+Theorem fp_quantize_bounded_error :
+  forall q x, 0 < q ->
+    Rabs (fp_quantize q x - x) <= q / 2.
+Proof.
+  intros q x Hq.
+  unfold fp_quantize.
+  pose proof (quantize_unit_bounded_error (x / q)) as Hbd.
+  assert (Heq : quantize_unit (x / q) * q - x =
+                (quantize_unit (x / q) - x / q) * q).
+  { field. lra. }
+  rewrite Heq.
+  rewrite Rabs_mult.
+  rewrite (Rabs_right q) by lra.
+  pose proof (Rabs_pos (quantize_unit (x / q) - x / q)) as Hp.
+  apply Rmult_le_reg_r with (r := / q); [apply Rinv_0_lt_compat; assumption|].
+  rewrite Rmult_assoc, Rinv_r by lra.
+  rewrite Rmult_1_r.
+  replace (q / 2 * / q) with (/ 2) by (field; lra).
+  exact Hbd.
+Qed.
+
+(** Binary64 mantissa scale: [2^{-52}] is the precision of the
+    52-bit mantissa fraction at exponent zero. The half-ULP
+    [2^{-53}] is the absolute error bound at this scale. *)
+
+Definition b64_eps : R := / (2 ^ 52).
+
+Lemma b64_eps_pos : 0 < b64_eps.
+Proof. unfold b64_eps. apply Rinv_0_lt_compat. apply pow_lt. lra. Qed.
+
+Definition b64_quantize : R -> R := fp_quantize b64_eps.
+
+Theorem b64_quantize_bounded_error :
+  forall x, Rabs (b64_quantize x - x) <= b64_eps / 2.
+Proof.
+  intros x. unfold b64_quantize.
+  apply fp_quantize_bounded_error. apply b64_eps_pos.
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
