@@ -8578,6 +8578,941 @@ Qed.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *  Part XVIII. IEEE 754 binary64 normal-range relative error          *)
+(** ******************************************************************** *)
+
+(** Closes [todo.md] item 1's relative-error gap.
+    [fp_quantize_bounded_error] (Part XVII) gives absolute error [q/2]
+    for any fixed precision [q]. The IEEE 754 normal-range relative-error
+    bound
+
+      |round(x) - x| <= 2^{-53} * |x|
+
+    follows by selecting [q] proportionally to [|x|]: for [x] in the
+    binade [2^e, 2^{e+1})], the unit in last place is [2^{e-52}], so
+    round-to-nearest has absolute error at most [2^{e-53}], which is
+    at most [2^{-53} * |x|] since [|x| >= 2^e]. The exponent-adaptive
+    quantizer [b64_normal_quantize e x] selects this [q] from the
+    binade exponent witness [e] and inherits the relative bound.
+
+    Stdlib's [powerRZ] extends [pow] to integer exponents, covering
+    the full IEEE 754 normal range [|x| in [2^{-1022}, 2^{1024}]];
+    the proof is uniform over [e : Z]. The bracket lower-bound
+    [2^e <= |x|] is the only hypothesis: [b64_normal_quantize] with
+    any such [e] satisfies the relative bound, with [e] chosen as the
+    binade exponent (i.e., the largest [e] with [2^e <= |x|]) for
+    minimum absolute error.
+
+    Theorems delivered:
+
+      Theorem 1. fp_quantize_pow_relative_error
+                 — relative-error bound from a binade lower-bound
+                   witness [2^e <= |x|] and matching precision
+                   [q = 2^(e-52)].
+
+      Theorem 2. b64_normal_quantize_relative_error
+                 — wrapper at the binary64 mantissa scale. *)
+
+Local Open Scope R_scope.
+
+Definition b64_q (e : Z) : R := powerRZ 2 (e - 52).
+
+Definition b64_normal_quantize (e : Z) (x : R) : R :=
+  fp_quantize (b64_q e) x.
+
+Lemma powerRZ_2_pos : forall e, 0 < powerRZ 2 e.
+Proof. intros e. apply powerRZ_lt. lra. Qed.
+
+Lemma powerRZ_2_nonneg : forall e, 0 <= powerRZ 2 e.
+Proof. intros e. left. apply powerRZ_2_pos. Qed.
+
+Lemma b64_q_pos : forall e, 0 < b64_q e.
+Proof. intros e. unfold b64_q. apply powerRZ_2_pos. Qed.
+
+Theorem fp_quantize_pow_relative_error :
+  forall (x : R) (e : Z),
+    powerRZ 2 e <= Rabs x ->
+    Rabs (fp_quantize (b64_q e) x - x) <= powerRZ 2 (-53) * Rabs x.
+Proof.
+  intros x e Hlo.
+  pose proof (b64_q_pos e) as Hq.
+  pose proof (@fp_quantize_bounded_error (b64_q e) x Hq) as Habs.
+  apply Rle_trans with (b64_q e / 2); [exact Habs|].
+  unfold b64_q.
+  assert (Hsplit : powerRZ 2 (e - 52) / 2 = powerRZ 2 (e - 53)).
+  { replace (e - 52)%Z with ((e - 53) + 1)%Z by lia.
+    rewrite powerRZ_add by lra.
+    simpl. field. }
+  rewrite Hsplit.
+  assert (Hfact : powerRZ 2 (e - 53) = powerRZ 2 (-53) * powerRZ 2 e).
+  { replace (e - 53)%Z with ((-53) + e)%Z by lia.
+    rewrite powerRZ_add by lra. reflexivity. }
+  rewrite Hfact.
+  apply Rmult_le_compat_l; [apply powerRZ_2_nonneg | exact Hlo].
+Qed.
+
+Theorem b64_normal_quantize_relative_error :
+  forall (x : R) (e : Z),
+    powerRZ 2 e <= Rabs x ->
+    Rabs (b64_normal_quantize e x - x) <= powerRZ 2 (-53) * Rabs x.
+Proof.
+  intros x e Hlo. unfold b64_normal_quantize.
+  apply fp_quantize_pow_relative_error. exact Hlo.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ******************************************************************** *)
+(** *  Part XIX. Brute-force constructive optimal matching                *)
+(** ******************************************************************** *)
+
+(** Closes [todo.md] item 2's gap with a constructive — though
+    exponential-time — optimal matcher. [exists_max_weight_matching]
+    (Part XVI) proves the abstract existence of a max-weight matching
+    in any non-empty candidate list. The polynomial-time Hungarian
+    algorithm is one instantiation; this part delivers a different one:
+    brute-force enumeration of every permutation of the ground-truth
+    list, paired in input order with the predicted boxes. The output
+    is provably optimal among all matchings of [boxes] obtained by
+    reordering [gts].
+
+    Cost: O(n!) for [n = |gts|]. Suitable for small instances (DETR
+    query slot counts of order 10-20) where polynomial-time Hungarian
+    is overkill but optimality matters. The asymptotically efficient
+    [O(n^3)] Hungarian construction with potentials and augmenting
+    paths remains a future-work direction.
+
+    Theorems delivered:
+
+      Theorem 1.  permutation_in_perms
+                  — every [Permutation] of [l] is in [perms l].
+      Theorem 2.  brute_match_in_enumeration
+                  — output is one of the enumerated matchings.
+      Theorem 3.  brute_match_optimal_in_enumeration
+                  — output has max weight among the enumeration.
+      Theorem 4.  brute_match_optimal_among_perms
+                  — for any permutation [perm] of [gts], the matching
+                    [matching_from_perm boxes perm] is dominated by
+                    [brute_match boxes gts]. *)
+
+Local Open Scope R_scope.
+
+Fixpoint insert_each_pos {A : Type} (x : A) (l : list A) : list (list A) :=
+  match l with
+  | [] => [[x]]
+  | y :: rest => (x :: y :: rest) :: map (cons y) (insert_each_pos x rest)
+  end.
+
+Fixpoint perms {A : Type} (l : list A) : list (list A) :=
+  match l with
+  | [] => [[]]
+  | x :: rest => flat_map (insert_each_pos x) (perms rest)
+  end.
+
+Lemma in_insert_each_pos_iff :
+  forall {A : Type} (x : A) (l p : list A),
+    In p (insert_each_pos x l) <->
+    exists l1 l2, l = l1 ++ l2 /\ p = l1 ++ x :: l2.
+Proof.
+  intros A x l. induction l as [|y rest IH]; intros p; split.
+  - intros [Heq | []]. subst p. exists (@nil A), (@nil A). split; reflexivity.
+  - intros [l1 [l2 [Heq Hp]]].
+    destruct l1; destruct l2; try discriminate.
+    simpl in Hp. subst p. simpl. left; reflexivity.
+  - intros [Heq | Hin].
+    + subst p. exists (@nil A), (y :: rest). split; reflexivity.
+    + apply in_map_iff in Hin as [p' [Heq Hp']]. subst p.
+      apply IH in Hp' as [l1 [l2 [Hl Hp'_eq]]]. subst p' rest.
+      exists (y :: l1), l2. split; reflexivity.
+  - intros [l1 [l2 [Heq Hp]]].
+    destruct l1 as [|y' l1'].
+    + simpl in Heq. subst l2.
+      simpl in Hp. subst p. simpl. left; reflexivity.
+    + simpl in Heq. injection Heq as Hyy Hl. subst y' rest.
+      simpl in Hp. subst p. simpl. right.
+      apply in_map_iff. exists (l1' ++ x :: l2). split; [reflexivity|].
+      apply IH. exists l1', l2. split; reflexivity.
+Qed.
+
+Theorem permutation_in_perms :
+  forall {A : Type} (l p : list A),
+    Permutation l p -> In p (perms l).
+Proof.
+  intros A l. induction l as [|x rest IH]; intros p Hperm.
+  - apply Permutation_nil in Hperm. subst. simpl. left; reflexivity.
+  - pose proof (Permutation_in x Hperm (in_eq x rest)) as Hxin.
+    apply in_split in Hxin as [l1 [l2 Hp_eq]]. subst p.
+    assert (Hperm_rest : Permutation rest (l1 ++ l2)).
+    { eapply Permutation_cons_app_inv. exact Hperm. }
+    pose proof (IH (l1 ++ l2) Hperm_rest) as Hin_rest.
+    simpl. apply in_flat_map. exists (l1 ++ l2). split; [assumption|].
+    apply in_insert_each_pos_iff. exists l1, l2. split; reflexivity.
+Qed.
+
+Lemma perms_nonempty :
+  forall {A : Type} (l : list A), perms l <> [].
+Proof.
+  intros A l. induction l as [|x rest IH].
+  - simpl. discriminate.
+  - simpl. intros Heq. apply IH. clear IH.
+    destruct (perms rest) as [|p ps]; [reflexivity|].
+    exfalso. simpl in Heq.
+    destruct p; simpl in Heq; discriminate.
+Qed.
+
+Section BruteForceMatching.
+  Variable Box GT : Type.
+  Variable cost : Box -> GT -> R.
+
+  Definition matching_from_perm (boxes : list Box) (perm : list GT) :
+      list (Box * GT) :=
+    combine boxes (firstn (length boxes) perm).
+
+  Definition all_brute_matchings (boxes : list Box) (gts : list GT) :
+      list (list (Box * GT)) :=
+    map (matching_from_perm boxes) (perms gts).
+
+  Lemma all_brute_matchings_nonempty :
+    forall boxes gts, all_brute_matchings boxes gts <> [].
+  Proof.
+    intros boxes gts. unfold all_brute_matchings.
+    intros Heq. pose proof (perms_nonempty gts) as Hne.
+    destruct (perms gts); [contradiction | discriminate].
+  Qed.
+
+  Definition pick_max (best m : list (Box * GT)) : list (Box * GT) :=
+    if Rle_dec (matching_weight cost best) (matching_weight cost m)
+    then m else best.
+
+  Definition brute_match (boxes : list Box) (gts : list GT) :
+      list (Box * GT) :=
+    match all_brute_matchings boxes gts with
+    | [] => []
+    | m :: rest => fold_left pick_max rest m
+    end.
+
+  Lemma fold_left_pick_max_in_or_init :
+    forall (rest : list (list (Box * GT))) (init : list (Box * GT)),
+      fold_left pick_max rest init = init \/
+      In (fold_left pick_max rest init) rest.
+  Proof.
+    induction rest as [|m rs IH]; intros init; simpl.
+    - left; reflexivity.
+    - destruct (IH (pick_max init m)) as [Heq | Hin].
+      + rewrite Heq. unfold pick_max.
+        destruct (Rle_dec (matching_weight cost init) (matching_weight cost m)).
+        * right. left. reflexivity.
+        * left. reflexivity.
+      + right. right. assumption.
+  Qed.
+
+  Lemma pick_max_ge_right :
+    forall init m,
+      matching_weight cost m <= matching_weight cost (pick_max init m).
+  Proof.
+    intros init m. unfold pick_max.
+    destruct (Rle_dec (matching_weight cost init) (matching_weight cost m));
+      [apply Rle_refl | lra].
+  Qed.
+
+  Lemma pick_max_ge_left :
+    forall init m,
+      matching_weight cost init <= matching_weight cost (pick_max init m).
+  Proof.
+    intros init m. unfold pick_max.
+    destruct (Rle_dec (matching_weight cost init) (matching_weight cost m));
+      [assumption | apply Rle_refl].
+  Qed.
+
+  Lemma fold_left_pick_max_ge_init :
+    forall (rest : list (list (Box * GT))) (init : list (Box * GT)),
+      matching_weight cost init <=
+      matching_weight cost (fold_left pick_max rest init).
+  Proof.
+    induction rest as [|m rs IH]; intros init; simpl.
+    - apply Rle_refl.
+    - eapply Rle_trans with (matching_weight cost (pick_max init m)).
+      + apply pick_max_ge_left.
+      + apply IH.
+  Qed.
+
+  Lemma fold_left_pick_max_dominates_in :
+    forall (rest : list (list (Box * GT))) (init m : list (Box * GT)),
+      In m rest ->
+      matching_weight cost m <=
+      matching_weight cost (fold_left pick_max rest init).
+  Proof.
+    induction rest as [|m0 rs IH]; intros init m Hin; simpl.
+    - contradiction.
+    - destruct Hin as [Heq | Hin].
+      + subst m0.
+        eapply Rle_trans with (matching_weight cost (pick_max init m)).
+        * apply pick_max_ge_right.
+        * apply fold_left_pick_max_ge_init.
+      + apply IH. assumption.
+  Qed.
+
+  Lemma fold_left_pick_max_dominates :
+    forall (rest : list (list (Box * GT))) (init m : list (Box * GT)),
+      In m rest \/ m = init ->
+      matching_weight cost m <=
+      matching_weight cost (fold_left pick_max rest init).
+  Proof.
+    intros rest init m [Hin | Heq].
+    - apply fold_left_pick_max_dominates_in. assumption.
+    - subst m. apply fold_left_pick_max_ge_init.
+  Qed.
+
+  Theorem brute_match_in_enumeration :
+    forall boxes gts,
+      In (brute_match boxes gts) (all_brute_matchings boxes gts).
+  Proof.
+    intros boxes gts. unfold brute_match.
+    pose proof (all_brute_matchings_nonempty boxes gts) as Hne.
+    destruct (all_brute_matchings boxes gts) as [|m rest] eqn:E; [contradiction|].
+    destruct (fold_left_pick_max_in_or_init rest m) as [Heq | Hin].
+    - rewrite Heq. left; reflexivity.
+    - right. assumption.
+  Qed.
+
+  Theorem brute_match_optimal_in_enumeration :
+    forall boxes gts m,
+      In m (all_brute_matchings boxes gts) ->
+      matching_weight cost m <= matching_weight cost (brute_match boxes gts).
+  Proof.
+    intros boxes gts m Hin. unfold brute_match.
+    pose proof (all_brute_matchings_nonempty boxes gts) as Hne.
+    destruct (all_brute_matchings boxes gts) as [|m0 rest] eqn:E; [contradiction|].
+    destruct Hin as [Heq | Hin].
+    - subst m. apply fold_left_pick_max_dominates. right; reflexivity.
+    - apply fold_left_pick_max_dominates. left; assumption.
+  Qed.
+
+  Theorem brute_match_optimal_among_perms :
+    forall boxes gts perm,
+      Permutation gts perm ->
+      matching_weight cost (matching_from_perm boxes perm) <=
+      matching_weight cost (brute_match boxes gts).
+  Proof.
+    intros boxes gts perm Hperm.
+    apply brute_match_optimal_in_enumeration.
+    unfold all_brute_matchings.
+    apply in_map_iff. exists perm. split; [reflexivity|].
+    apply permutation_in_perms. assumption.
+  Qed.
+
+End BruteForceMatching.
+
+Local Close Scope R_scope.
+
+(** ******************************************************************** *)
+(** *  Part XX. Geometric saturating tightness witness                    *)
+(** ******************************************************************** *)
+
+(** Part II's [build_tight n] saturates [nms_quantitative_bound] using
+    the constant-IoU witness [triv_iou _ _ := 100]. While valid as a
+    saturation proof, the constant IoU is not realised by any
+    geometric structure. This part delivers a geometric saturating
+    witness using [heatmap_iou]: [n] pixel detections at positions
+    [(0, 0), (0, 1), ..., (0, n-1)] with descending scores [n, n-1,
+    ..., 1] all lie within Chebyshev radius [n] of each other, so
+    [heatmap_iou n] returns [1] between every pair. The same
+    parametric tightness relation as [tightness_parametric] holds —
+    quantitative bound saturated under genuine geometric IoU.
+
+    Theorems delivered:
+
+      Theorem 1.  geom_tight_NoDup
+      Theorem 2.  geom_tight_sorted_desc
+      Theorem 3.  geom_tight_no_tie_clash
+      Theorem 4.  geom_tight_pairs_high_iou
+                  — every pair has [heatmap_iou n = 1].
+      Theorem 5.  geom_tight_quantitative_saturation
+                  — geometric instance saturates
+                    [nms_quantitative_bound] at equality. *)
+
+Definition geom_tight (n : nat) : list (@det pixel) :=
+  map (fun k : nat => mkDet (n - k) (0%nat, k)) (seq 0 n).
+
+Lemma geom_tight_length :
+  forall n, length (geom_tight n) = n.
+Proof.
+  intros n. unfold geom_tight. rewrite length_map, length_seq. reflexivity.
+Qed.
+
+Lemma geom_tight_in :
+  forall n d, In d (geom_tight n) ->
+    exists k, k < n /\ d = mkDet (n - k) (0%nat, k).
+Proof.
+  intros n d Hin. unfold geom_tight in Hin.
+  apply in_map_iff in Hin as [k [Heq Hkin]].
+  apply in_seq in Hkin. exists k. split; [lia | symmetry; assumption].
+Qed.
+
+Lemma geom_tight_NoDup :
+  forall n, NoDup (geom_tight n).
+Proof.
+  intros n. unfold geom_tight.
+  pose proof (seq_NoDup n 0) as Hnd.
+  remember (seq 0 n) as l. clear Heql.
+  induction Hnd as [|k rest Hnotin Hnd' IH]; simpl.
+  - constructor.
+  - constructor; [|exact IH].
+    intros Hin. apply Hnotin.
+    apply in_map_iff in Hin as [k' [Heq Hkin]].
+    apply (f_equal (fun d : @det pixel => snd (box d))) in Heq.
+    cbn in Heq. subst k'. assumption.
+Qed.
+
+Lemma sorted_desc_geom_tight_helper :
+  forall n start m,
+    sorted_desc (map (fun k : nat => mkDet (n - k) (0%nat, k)) (seq start m)).
+Proof.
+  intros n start m. revert start.
+  induction m as [|m IH]; intros start; simpl; [exact I|].
+  split.
+  - intros d' Hd'. apply in_map_iff in Hd' as [k' [Heq Hkin]].
+    apply in_seq in Hkin. subst d'. cbn [score]. lia.
+  - apply IH.
+Qed.
+
+Lemma geom_tight_sorted_desc :
+  forall n, sorted_desc (geom_tight n).
+Proof. intros n. apply sorted_desc_geom_tight_helper. Qed.
+
+Lemma pdist_zero_x :
+  forall a b, pdist (0%nat, a) (0%nat, b) = abs_diff a b.
+Proof.
+  intros a b. unfold pdist, abs_diff. cbn.
+  destruct (Nat.leb a b) eqn:E; lia.
+Qed.
+
+Lemma abs_diff_lt :
+  forall a b m, a < m -> b < m -> abs_diff a b < m.
+Proof.
+  intros a b m Ha Hb. unfold abs_diff. destruct (Nat.leb_spec a b); lia.
+Qed.
+
+Lemma geom_tight_pairs_high_iou :
+  forall n d d', In d (geom_tight n) -> In d' (geom_tight n) ->
+    heatmap_iou n (box d) (box d') = 1.
+Proof.
+  intros n d d' Hin Hin'.
+  apply geom_tight_in in Hin as [k [Hk Hd_eq]].
+  apply geom_tight_in in Hin' as [k' [Hk' Hd'_eq]].
+  subst d d'. cbn [box].
+  unfold heatmap_iou. rewrite pdist_zero_x.
+  destruct (Nat.leb_spec (abs_diff k k') n); [reflexivity|].
+  exfalso. pose proof (@abs_diff_lt k k' n Hk Hk'). lia.
+Qed.
+
+Lemma geom_tight_no_tie_clash :
+  forall n, no_tie_clash (heatmap_iou n) 1 (geom_tight n).
+Proof.
+  intros n d d' Hin Hin' Hne Hscore_eq.
+  exfalso. apply Hne.
+  apply geom_tight_in in Hin as [k [Hk Hd_eq]].
+  apply geom_tight_in in Hin' as [k' [Hk' Hd'_eq]].
+  subst d d'. cbn [score] in Hscore_eq.
+  assert (k = k') by lia. subst k'. reflexivity.
+Qed.
+
+(** ** General helper: NMS reduces a list to its head when every tail
+    element has IoU at least [tau] with the head. *)
+
+Lemma nms_sorted_drops_all_high_iou :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau : nat)
+         (d0 : @det Box) (rest : list (@det Box)),
+    (forall d', In d' rest -> tau <= iou (box d0) (box d')) ->
+    nms_sorted iou tau (d0 :: rest) = [d0].
+Proof.
+  intros Box iou tau d0 rest Hall.
+  rewrite nms_sorted_equation. f_equal.
+  assert (Hf : filter (fun d' =>
+                         negb (Nat.leb tau (iou (box d0) (box d'))))
+                      rest = []).
+  { induction rest as [|d rs IH]; simpl; [reflexivity|].
+    assert (Htau_le : tau <= iou (box d0) (box d))
+      by (apply Hall; left; reflexivity).
+    apply Nat.leb_le in Htau_le. rewrite Htau_le. cbn [negb].
+    apply IH. intros d'' Hd''. apply Hall. right. assumption. }
+  rewrite Hf. apply nms_sorted_equation.
+Qed.
+
+(** ** All scores in [geom_tight n] are at least 1. *)
+
+Lemma filter_above_1_geom_tight :
+  forall n, filter_above 1 (geom_tight n) = geom_tight n.
+Proof.
+  intros n. unfold filter_above. apply filter_id_when_pred_holds.
+  intros d Hin. unfold above.
+  apply geom_tight_in in Hin as [k [Hk Heq]]. subst d. cbn [score].
+  apply Nat.leb_le. lia.
+Qed.
+
+(** ** [nms_sorted] reduces [geom_tight n] to its head element. *)
+
+Lemma nms_sorted_geom_tight :
+  forall n,
+    nms_sorted (heatmap_iou n) 1 (geom_tight n) =
+    match n with
+    | O => []
+    | S k => [mkDet (S k) (0%nat, 0%nat)]
+    end.
+Proof.
+  intros n. destruct n as [|n']; [reflexivity|].
+  unfold geom_tight. cbn [seq map].
+  replace (S n' - 0) with (S n') by lia.
+  apply nms_sorted_drops_all_high_iou.
+  intros d' Hd'. apply in_map_iff in Hd' as [k [Heq Hkin]].
+  apply in_seq in Hkin. subst d'.
+  cbn [box]. unfold heatmap_iou.
+  rewrite pdist_zero_x.
+  unfold abs_diff.
+  assert (Hk0 : Nat.leb 0 k = true) by (apply Nat.leb_le; lia).
+  rewrite Hk0.
+  rewrite Nat.sub_0_r.
+  destruct (Nat.leb_spec k (S n')); [lia | lia].
+Qed.
+
+(** ** Each element's [has_higher_overlapper] flag agrees with
+    [score < n]: the top-score element (k = 0) has none, every other
+    element has the head as a higher-scored overlapper. *)
+
+Lemma head_in_geom_tight :
+  forall n', In (mkDet (S n') (0%nat, 0%nat)) (geom_tight (S n')).
+Proof.
+  intros n'. unfold geom_tight. cbn [seq map].
+  replace (S n' - 0) with (S n') by lia. left. reflexivity.
+Qed.
+
+Lemma has_higher_overlapper_geom_tight :
+  forall n d, In d (geom_tight n) ->
+    has_higher_overlapper (heatmap_iou n) 1 (geom_tight n) d =
+    Nat.ltb (score d) n.
+Proof.
+  intros n d Hin.
+  pose proof Hin as Hin_save.
+  apply geom_tight_in in Hin as [k [Hk Hd_eq]]. subst d.
+  cbn [score].
+  destruct n as [|n']; [lia|].
+  unfold has_higher_overlapper.
+  destruct (Nat.ltb_spec (S n' - k) (S n')) as [Hlt | Hge].
+  - apply existsb_exists.
+    exists (mkDet (S n') (0%nat, 0%nat)).
+    split; [apply head_in_geom_tight|].
+    apply Bool.andb_true_iff. split.
+    + apply Nat.ltb_lt. cbn [score]. exact Hlt.
+    + apply Nat.leb_le.
+      rewrite (geom_tight_pairs_high_iou (S n')
+                (mkDet (S n' - k) (0%nat, k))
+                (mkDet (S n') (0%nat, 0%nat))); [lia|exact Hin_save|].
+      apply head_in_geom_tight.
+  - apply Bool.not_true_is_false. intros Hex.
+    apply existsb_exists in Hex as [d' [Hin' Hcond]].
+    apply Bool.andb_true_iff in Hcond as [Hlt _].
+    apply Nat.ltb_lt in Hlt.
+    apply geom_tight_in in Hin' as [k' [Hk' Hd'_eq]]. subst d'.
+    cbn [score] in Hlt. lia.
+Qed.
+
+(** ** Violator-above of [geom_tight n] is the tail (all but the head). *)
+
+Lemma violator_above_geom_tight_helper :
+  forall n' l,
+    (forall k, In k l -> k < S n') ->
+    filter (fun d : @det pixel =>
+      above 1 d &&
+      has_higher_overlapper (heatmap_iou (S n')) 1 (geom_tight (S n')) d)
+      (map (fun k : nat => mkDet (S n' - k) (0%nat, k)) l) =
+    map (fun k : nat => mkDet (S n' - k) (0%nat, k))
+        (filter (fun k => negb (Nat.eqb k 0)) l).
+Proof.
+  intros n' l Hbnd.
+  induction l as [|k rest IH].
+  - reflexivity.
+  - cbn [map filter].
+    assert (Hk : k < S n') by (apply Hbnd; left; reflexivity).
+    assert (Hk_in_geom : In (mkDet (S n' - k) (0%nat, k)) (geom_tight (S n'))).
+    { unfold geom_tight. apply in_map_iff. exists k. split; [reflexivity|].
+      apply in_seq. lia. }
+    rewrite (has_higher_overlapper_geom_tight (S n') _ Hk_in_geom).
+    unfold above. cbn [score].
+    destruct (Nat.eq_dec k 0) as [Hk0 | Hk0].
+    + subst k. rewrite Nat.sub_0_r.
+      rewrite Nat.ltb_irrefl. rewrite Bool.andb_false_r.
+      cbn [Nat.eqb negb].
+      apply IH. intros k' Hk'_in. apply Hbnd. right. assumption.
+    + assert (Hleb : Nat.leb 1 (S n' - k) = true)
+        by (apply Nat.leb_le; lia).
+      assert (Hltb : Nat.ltb (S n' - k) (S n') = true)
+        by (apply Nat.ltb_lt; lia).
+      rewrite Hleb, Hltb. cbn [andb].
+      assert (Hkneq : Nat.eqb k 0 = false) by (apply Nat.eqb_neq; lia).
+      rewrite Hkneq. cbn [negb map].
+      f_equal. apply IH. intros k' Hk'_in. apply Hbnd. right. assumption.
+Qed.
+
+Lemma violation_count_geom_tight :
+  forall n, violation_count (heatmap_iou n) 1 1 (geom_tight n) = n - 1.
+Proof.
+  intros n. unfold violation_count, violator_above.
+  destruct n as [|n']; [reflexivity|].
+  unfold geom_tight at 2.
+  rewrite (@violator_above_geom_tight_helper n' (seq 0 (S n'))).
+  - rewrite length_map.
+    cbn [seq filter].
+    cbn [Nat.eqb negb].
+    assert (Hkeep : forall k, In k (seq 1 n') ->
+                    negb (Nat.eqb k 0) = true).
+    { intros k Hk. apply in_seq in Hk. apply Bool.negb_true_iff.
+      apply Nat.eqb_neq. lia. }
+    rewrite (@filter_id_when_pred_holds nat
+               (fun k : nat => negb (Nat.eqb k 0)) (seq 1 n') Hkeep).
+    rewrite length_seq. lia.
+  - intros k Hk. apply in_seq in Hk. lia.
+Qed.
+
+(** ** Headline saturation theorem: geometric witness saturates
+    [nms_quantitative_bound] at equality. *)
+
+Theorem geom_tight_quantitative_saturation :
+  forall n,
+    length (filter_above 1 (geom_tight n))
+    = length (filter_above 1 (nms_sorted (heatmap_iou n) 1 (geom_tight n)))
+      + violation_count (heatmap_iou n) 1 1 (geom_tight n).
+Proof.
+  intros n.
+  rewrite filter_above_1_geom_tight.
+  rewrite geom_tight_length.
+  rewrite nms_sorted_geom_tight.
+  rewrite violation_count_geom_tight.
+  destruct n as [|k]; [reflexivity|].
+  unfold filter_above. cbn [filter]. unfold above. cbn [score].
+  assert (Hlt : Nat.leb 1 (S k) = true) by (apply Nat.leb_le; lia).
+  rewrite Hlt. simpl. lia.
+Qed.
+
+(** ******************************************************************** *)
+(** *  Part XXI. IEEE 754 round-to-nearest-even, subnormals, special      *)
+(** *           values                                                    *)
+(** ******************************************************************** *)
+
+(** Closes [todo.md] item 1's remaining sub-pieces:
+
+      (a) round-to-nearest-even tie-breaking
+      (c) subnormal range with absolute error 2^{-1075}
+      (d) special-value option type with NaN / +inf / -inf propagation
+
+    Part XVIII already closed sub-piece (b) — the relative-error scaling
+    on the normal range. The remaining pieces are delivered here.
+
+    [round_half_even x] returns the nearest integer to [x], breaking
+    exact midpoints to the even integer. The absolute-error bound
+    [|round x - x| <= /2] holds unconditionally; at exact midpoints,
+    the result has even parity (LSB = 0).
+
+    [b64_subnormal_quantize] is the fixed-precision quantizer at the
+    smallest binary64 step [2^{-1074}], inheriting absolute-error
+    bound [<= 2^{-1075}] from [fp_quantize_bounded_error].
+
+    [b64_value : Type] models the four classes of binary64 values:
+    finite (normal or subnormal) reals [b64_v r], [+inf], [-inf], and
+    [NaN]. [b64_add], [b64_sub], [b64_mul], [b64_neg], and the
+    comparison [b64_lt] propagate by IEEE 754 rules: NaN dominates;
+    [+inf + -inf] and [0 * inf] yield NaN; [b64_lt] is always false on
+    NaN inputs.
+
+    Theorems delivered:
+
+      Theorem 1.  round_half_even_bounded
+                  — |IZR (round_half_even x) - x| <= /2 unconditionally.
+      Theorem 2.  round_half_even_midpoint_even
+                  — at midpoints, the result has even parity.
+      Theorem 3.  fp_quantize_rne_bounded_error
+                  — round-to-nearest-even quantizer at precision q.
+      Theorem 4.  b64_subnormal_bounded_error
+                  — subnormal-range absolute-error bound.
+      Theorem 5+.  b64_add_*, b64_mul_*, b64_lt_*
+                  — IEEE 754 propagation rules. *)
+
+Local Open Scope R_scope.
+
+(** ** Round-to-nearest-even integer rounding. *)
+
+Definition round_half_even (x : R) : Z :=
+  let n := Int_part x in
+  let f := x - IZR n in
+  if Rlt_dec f (/2) then n
+  else if Rlt_dec (/2) f then (n + 1)%Z
+  else if Z.even n then n else (n + 1)%Z.
+
+Theorem round_half_even_bounded :
+  forall x, Rabs (IZR (round_half_even x) - x) <= /2.
+Proof.
+  intros x. unfold round_half_even.
+  pose proof (base_Int_part x) as [Hlo Hhi].
+  destruct (Rlt_dec (x - IZR (Int_part x)) (/2)) as [Hlt | Hge].
+  - rewrite Rabs_left1 by lra. lra.
+  - destruct (Rlt_dec (/2) (x - IZR (Int_part x))) as [Hlt2 | Hge2].
+    + rewrite plus_IZR. simpl.
+      rewrite Rabs_right by lra. lra.
+    + assert (Hmid : x - IZR (Int_part x) = /2) by lra.
+      destruct (Z.even (Int_part x)) eqn:E.
+      * rewrite Rabs_left1 by lra. lra.
+      * rewrite plus_IZR. simpl.
+        rewrite Rabs_right by lra. lra.
+Qed.
+
+Theorem round_half_even_midpoint_even :
+  forall x, x = IZR (Int_part x) + /2 ->
+            Z.even (round_half_even x) = true.
+Proof.
+  intros x Heq.
+  unfold round_half_even.
+  destruct (Rlt_dec (x - IZR (Int_part x)) (/2)) as [Hlt | _]; [lra|].
+  destruct (Rlt_dec (/2) (x - IZR (Int_part x))) as [Hlt2 | _]; [lra|].
+  destruct (Z.even (Int_part x)) eqn:E.
+  - exact E.
+  - rewrite Z.even_add. rewrite E. reflexivity.
+Qed.
+
+(** ** Round-to-nearest-even quantizer at precision [q]. *)
+
+Definition fp_quantize_rne (q x : R) : R := IZR (round_half_even (x / q)) * q.
+
+Theorem fp_quantize_rne_bounded_error :
+  forall q x, 0 < q -> Rabs (fp_quantize_rne q x - x) <= q / 2.
+Proof.
+  intros q x Hq. unfold fp_quantize_rne.
+  pose proof (round_half_even_bounded (x / q)) as Hbnd.
+  assert (Heq : IZR (round_half_even (x / q)) * q - x =
+                (IZR (round_half_even (x / q)) - x / q) * q).
+  { field. lra. }
+  rewrite Heq, Rabs_mult, (Rabs_right q) by lra.
+  apply Rmult_le_reg_r with (r := / q); [apply Rinv_0_lt_compat; lra|].
+  rewrite Rmult_assoc, Rinv_r by lra.
+  rewrite Rmult_1_r.
+  replace (q / 2 * / q) with (/ 2) by (field; lra).
+  exact Hbnd.
+Qed.
+
+(** ** Subnormal-range quantizer.
+
+    Below the normal-range threshold [|x| < 2^{-1022}], IEEE 754
+    binary64 represents values at the fixed precision [2^{-1074}]
+    (the smallest representable step), with absolute-error bound
+    [2^{-1075}] (half-ULP). *)
+
+Definition b64_subnormal_q : R := powerRZ 2 (-1074).
+
+Definition b64_subnormal_quantize : R -> R := fp_quantize b64_subnormal_q.
+
+Theorem b64_subnormal_bounded_error :
+  forall x, Rabs (b64_subnormal_quantize x - x) <= powerRZ 2 (-1075).
+Proof.
+  intros x. unfold b64_subnormal_quantize, b64_subnormal_q.
+  pose proof (powerRZ_2_pos (-1074)) as Hpos.
+  pose proof (@fp_quantize_bounded_error (powerRZ 2 (-1074)) x Hpos) as H.
+  apply Rle_trans with (powerRZ 2 (-1074) / 2); [exact H|].
+  replace (-1074)%Z with ((-1075) + 1)%Z by lia.
+  rewrite powerRZ_add by lra.
+  simpl. lra.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** IEEE 754 special-value algebra. *)
+
+Inductive b64_value : Type :=
+  | b64_v : R -> b64_value
+  | b64_pinf : b64_value
+  | b64_ninf : b64_value
+  | b64_nan : b64_value.
+
+Local Open Scope R_scope.
+
+Definition b64_add (a b : b64_value) : b64_value :=
+  match a, b with
+  | b64_nan, _ => b64_nan
+  | _, b64_nan => b64_nan
+  | b64_pinf, b64_ninf => b64_nan
+  | b64_ninf, b64_pinf => b64_nan
+  | b64_pinf, _ => b64_pinf
+  | _, b64_pinf => b64_pinf
+  | b64_ninf, _ => b64_ninf
+  | _, b64_ninf => b64_ninf
+  | b64_v x, b64_v y => b64_v (x + y)
+  end.
+
+Definition b64_neg (a : b64_value) : b64_value :=
+  match a with
+  | b64_v x => b64_v (- x)
+  | b64_pinf => b64_ninf
+  | b64_ninf => b64_pinf
+  | b64_nan => b64_nan
+  end.
+
+Definition b64_sub (a b : b64_value) : b64_value := b64_add a (b64_neg b).
+
+Definition b64_mul (a b : b64_value) : b64_value :=
+  match a, b with
+  | b64_nan, _ => b64_nan
+  | _, b64_nan => b64_nan
+  | b64_pinf, b64_pinf => b64_pinf
+  | b64_ninf, b64_ninf => b64_pinf
+  | b64_pinf, b64_ninf => b64_ninf
+  | b64_ninf, b64_pinf => b64_ninf
+  | b64_pinf, b64_v x =>
+      if Rlt_dec 0 x then b64_pinf
+      else if Rlt_dec x 0 then b64_ninf
+      else b64_nan
+  | b64_v x, b64_pinf =>
+      if Rlt_dec 0 x then b64_pinf
+      else if Rlt_dec x 0 then b64_ninf
+      else b64_nan
+  | b64_ninf, b64_v x =>
+      if Rlt_dec 0 x then b64_ninf
+      else if Rlt_dec x 0 then b64_pinf
+      else b64_nan
+  | b64_v x, b64_ninf =>
+      if Rlt_dec 0 x then b64_ninf
+      else if Rlt_dec x 0 then b64_pinf
+      else b64_nan
+  | b64_v x, b64_v y => b64_v (x * y)
+  end.
+
+Definition b64_lt (a b : b64_value) : bool :=
+  match a, b with
+  | b64_nan, _ => false
+  | _, b64_nan => false
+  | b64_ninf, b64_ninf => false
+  | b64_ninf, _ => true
+  | _, b64_ninf => false
+  | b64_pinf, b64_pinf => false
+  | b64_pinf, _ => false
+  | _, b64_pinf => true
+  | b64_v x, b64_v y => if Rlt_dec x y then true else false
+  end.
+
+(** ** Propagation theorems. *)
+
+Theorem b64_add_nan_l : forall a, b64_add b64_nan a = b64_nan.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem b64_add_nan_r : forall a, b64_add a b64_nan = b64_nan.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem b64_add_pinf_ninf : b64_add b64_pinf b64_ninf = b64_nan.
+Proof. reflexivity. Qed.
+
+Theorem b64_add_ninf_pinf : b64_add b64_ninf b64_pinf = b64_nan.
+Proof. reflexivity. Qed.
+
+Theorem b64_add_pinf_finite :
+  forall x, b64_add b64_pinf (b64_v x) = b64_pinf.
+Proof. reflexivity. Qed.
+
+Theorem b64_add_finite_pinf :
+  forall x, b64_add (b64_v x) b64_pinf = b64_pinf.
+Proof. reflexivity. Qed.
+
+Theorem b64_add_ninf_finite :
+  forall x, b64_add b64_ninf (b64_v x) = b64_ninf.
+Proof. reflexivity. Qed.
+
+Theorem b64_add_finite : forall x y, b64_add (b64_v x) (b64_v y) = b64_v (x + y).
+Proof. reflexivity. Qed.
+
+Theorem b64_neg_neg : forall a, b64_neg (b64_neg a) = a.
+Proof.
+  destruct a; simpl; try reflexivity.
+  f_equal. lra.
+Qed.
+
+Theorem b64_sub_self_finite : forall x, b64_sub (b64_v x) (b64_v x) = b64_v 0.
+Proof.
+  intros x. unfold b64_sub. simpl.
+  f_equal. lra.
+Qed.
+
+Theorem b64_sub_pinf_pinf : b64_sub b64_pinf b64_pinf = b64_nan.
+Proof. reflexivity. Qed.
+
+Theorem b64_sub_ninf_ninf : b64_sub b64_ninf b64_ninf = b64_nan.
+Proof. reflexivity. Qed.
+
+Theorem b64_mul_nan_l : forall a, b64_mul b64_nan a = b64_nan.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem b64_mul_nan_r : forall a, b64_mul a b64_nan = b64_nan.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem b64_mul_zero_pinf : b64_mul (b64_v 0) b64_pinf = b64_nan.
+Proof.
+  simpl. destruct (Rlt_dec 0 0); [lra|].
+  destruct (Rlt_dec 0 0); [lra | reflexivity].
+Qed.
+
+Theorem b64_mul_pinf_zero : b64_mul b64_pinf (b64_v 0) = b64_nan.
+Proof.
+  simpl. destruct (Rlt_dec 0 0); [lra|].
+  destruct (Rlt_dec 0 0); [lra | reflexivity].
+Qed.
+
+Theorem b64_mul_zero_ninf : b64_mul (b64_v 0) b64_ninf = b64_nan.
+Proof.
+  simpl. destruct (Rlt_dec 0 0); [lra|].
+  destruct (Rlt_dec 0 0); [lra | reflexivity].
+Qed.
+
+Theorem b64_mul_ninf_zero : b64_mul b64_ninf (b64_v 0) = b64_nan.
+Proof.
+  simpl. destruct (Rlt_dec 0 0); [lra|].
+  destruct (Rlt_dec 0 0); [lra | reflexivity].
+Qed.
+
+Theorem b64_mul_pinf_pinf : b64_mul b64_pinf b64_pinf = b64_pinf.
+Proof. reflexivity. Qed.
+
+Theorem b64_mul_ninf_ninf : b64_mul b64_ninf b64_ninf = b64_pinf.
+Proof. reflexivity. Qed.
+
+Theorem b64_mul_pinf_ninf : b64_mul b64_pinf b64_ninf = b64_ninf.
+Proof. reflexivity. Qed.
+
+Theorem b64_mul_ninf_pinf : b64_mul b64_ninf b64_pinf = b64_ninf.
+Proof. reflexivity. Qed.
+
+Theorem b64_mul_finite : forall x y, b64_mul (b64_v x) (b64_v y) = b64_v (x * y).
+Proof. reflexivity. Qed.
+
+Theorem b64_lt_nan_l : forall a, b64_lt b64_nan a = false.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem b64_lt_nan_r : forall a, b64_lt a b64_nan = false.
+Proof. destruct a; reflexivity. Qed.
+
+Theorem b64_lt_irrefl_finite : forall x, b64_lt (b64_v x) (b64_v x) = false.
+Proof.
+  intros x. simpl. destruct (Rlt_dec x x); [lra | reflexivity].
+Qed.
+
+Theorem b64_lt_ninf_pinf : b64_lt b64_ninf b64_pinf = true.
+Proof. reflexivity. Qed.
+
+Theorem b64_lt_ninf_finite : forall x, b64_lt b64_ninf (b64_v x) = true.
+Proof. reflexivity. Qed.
+
+Theorem b64_lt_finite_pinf : forall x, b64_lt (b64_v x) b64_pinf = true.
+Proof. reflexivity. Qed.
+
+Theorem b64_lt_pinf_l : forall a, a <> b64_nan -> a <> b64_pinf -> b64_lt a b64_pinf = true.
+Proof. destruct a; intros H1 H2; [reflexivity | exfalso; apply H2; reflexivity | reflexivity | exfalso; apply H1; reflexivity]. Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
