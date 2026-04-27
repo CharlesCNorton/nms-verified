@@ -9511,6 +9511,369 @@ Proof. reflexivity. Qed.
 Theorem b64_lt_pinf_l : forall a, a <> b64_nan -> a <> b64_pinf -> b64_lt a b64_pinf = true.
 Proof. destruct a; intros H1 H2; [reflexivity | exfalso; apply H2; reflexivity | reflexivity | exfalso; apply H1; reflexivity]. Qed.
 
+
+(** ******************************************************************** *)
+(** *  Part XXII. Optimal matching via dynamic programming                *)
+(** ******************************************************************** *)
+
+(** Closes [todo.md] item 1's remaining gap with the standard
+    bipartite-assignment DP recurrence and a rigorous correctness
+    reduction to [brute_match]:
+
+      dp_max_match (b :: rest) gts =
+        max over g in gts of
+          (cost b g + dp_max_match rest (dp_remove_first g gts))
+
+    This is the canonical Hungarian-style DP. Standard memoization
+    (an extraction-time optimization) takes the runtime to
+    [O(2^n * n^2)]; without explicit caching, Coq's reduction matches
+    [brute_match]'s [O(n!)]. The strict-polynomial [O(n^3)] Hungarian
+    variant with potentials and augmenting paths remains genuine
+    future work — its correctness proof requires LP duality on the
+    assignment polytope (or a Berge's-theorem formalization on the
+    equality subgraph), neither of which Stdlib provides. The DP
+    delivered here closes the optimality side at the recurrence level,
+    parametrically without LP duality.
+
+    The equivalence proof goes via two inequalities:
+
+      (1) for any permutation [perm] of [gts], the matching weight
+          [matching_weight (matching_from_perm boxes perm)] is at
+          most [dp_max_match boxes gts];
+
+      (2) some perm-derived matching achieves [dp_max_match boxes
+          gts]'s value.
+
+    Composing (1) and (2) with [brute_match]'s optimality on the
+    same enumeration yields [dp_max_match boxes gts =
+    matching_weight cost (brute_match cost boxes gts)] — the
+    headline equivalence.
+
+    Theorems delivered:
+
+      Theorem 1.  in_perms_permutation
+                  — soundness of perm enumeration: every enumerated
+                    list is a permutation.
+      Theorem 2.  dp_remove_first_perm
+                  — [Permutation l (g :: dp_remove_first g l)] when
+                    [g in l].
+      Theorem 3.  dp_max_match_ge_perm
+                  — dp dominates any perm-derived matching weight.
+      Theorem 4.  dp_max_match_le_some_perm
+                  — some perm-derived matching achieves dp's value.
+      Theorem 5.  dp_max_match_eq_brute_weight
+                  — dp = matching_weight cost (brute_match cost ...). *)
+
+Local Open Scope R_scope.
+
+(** ** Soundness of permutation enumeration. *)
+
+Theorem in_perms_permutation :
+  forall {A : Type} (l p : list A), In p (perms l) -> Permutation l p.
+Proof.
+  intros A l. induction l as [|x rest IH]; intros p Hin.
+  - simpl in Hin. destruct Hin as [Heq | []]. subst. apply Permutation_refl.
+  - simpl in Hin. apply in_flat_map in Hin as [p0 [Hp0_in Hp_in]].
+    apply IH in Hp0_in.
+    apply in_insert_each_pos_iff in Hp_in as [l1 [l2 [Heq Hp_eq]]].
+    subst p0. subst p.
+    eapply Permutation_trans.
+    + apply perm_skip. exact Hp0_in.
+    + apply Permutation_cons_app. apply Permutation_refl.
+Qed.
+
+Section DPMatching.
+  Variable Box GT : Type.
+  Variable cost : Box -> GT -> R.
+  Variable GT_eq_dec : forall g1 g2 : GT, {g1 = g2} + {g1 <> g2}.
+
+  Fixpoint dp_remove_first (g : GT) (l : list GT) : list GT :=
+    match l with
+    | [] => []
+    | h :: rest =>
+        if GT_eq_dec h g then rest else h :: dp_remove_first g rest
+    end.
+
+  Lemma dp_remove_first_in_split :
+    forall g l, In g l ->
+      exists l1 l2, l = l1 ++ g :: l2 /\ dp_remove_first g l = l1 ++ l2.
+  Proof.
+    induction l as [|h rest IH]; intros Hin; simpl in Hin; [contradiction|].
+    simpl. destruct (GT_eq_dec h g) as [Heq | Hne].
+    - subst h. exists [], rest. split; reflexivity.
+    - destruct Hin as [Heq | Hin]; [contradiction|].
+      destruct (IH Hin) as [l1 [l2 [Heq_split Hrm]]].
+      exists (h :: l1), l2. split.
+      + simpl. f_equal. exact Heq_split.
+      + simpl. f_equal. exact Hrm.
+  Qed.
+
+  Theorem dp_remove_first_perm :
+    forall g l, In g l -> Permutation l (g :: dp_remove_first g l).
+  Proof.
+    intros g l Hin.
+    destruct (dp_remove_first_in_split g l Hin) as [l1 [l2 [Heq_split Hrm]]].
+    rewrite Hrm. rewrite Heq_split.
+    apply Permutation_sym. apply Permutation_cons_app. apply Permutation_refl.
+  Qed.
+
+  Lemma dp_remove_first_NoDup :
+    forall g l, NoDup l -> NoDup (dp_remove_first g l).
+  Proof.
+    induction l as [|h rest IH]; intros Hnd; simpl; [constructor|].
+    destruct (GT_eq_dec h g) as [Heq | Hne].
+    - inversion Hnd; assumption.
+    - inversion Hnd as [|? ? Hnotin Hnd_rest]; subst.
+      constructor.
+      + intros Hin. apply Hnotin.
+        clear -Hin. induction rest as [|x xs IHx]; simpl in Hin;
+          [contradiction|].
+        simpl in Hin. destruct (GT_eq_dec x g) as [Heq | Hne'].
+        * right. assumption.
+        * destruct Hin as [Heq | Hin]; [left; assumption|].
+          right. apply IHx. assumption.
+      + apply IH. assumption.
+  Qed.
+
+  (** ** Max over a non-empty list with explicit head. *)
+
+  Definition Rmax_list (init : R) (l : list R) : R :=
+    fold_right Rmax init l.
+
+  Lemma Rmax_list_init_le :
+    forall init l, init <= Rmax_list init l.
+  Proof.
+    intros init l. unfold Rmax_list.
+    induction l as [|y ys IH]; simpl; [apply Rle_refl|].
+    eapply Rle_trans; [exact IH|]. apply Rmax_r.
+  Qed.
+
+  Lemma Rmax_list_in_le :
+    forall init l x, In x l -> x <= Rmax_list init l.
+  Proof.
+    intros init l x Hin. unfold Rmax_list.
+    induction l as [|y ys IH]; simpl in Hin; [contradiction|].
+    simpl. destruct Hin as [Heq | Hin].
+    - subst y. apply Rmax_l.
+    - eapply Rle_trans; [apply IH; assumption|]. apply Rmax_r.
+  Qed.
+
+  Lemma Rmax_list_witness :
+    forall init l,
+      Rmax_list init l = init \/ exists x, In x l /\ Rmax_list init l = x.
+  Proof.
+    intros init l. unfold Rmax_list.
+    induction l as [|y ys IH]; simpl.
+    - left. reflexivity.
+    - destruct IH as [IH | [w [Hw_in Hw_eq]]].
+      + rewrite IH.
+        destruct (Rle_or_lt y init) as [Hle | Hgt].
+        * left. apply Rmax_right. assumption.
+        * right. exists y. split; [left; reflexivity|].
+          apply Rmax_left. lra.
+      + rewrite Hw_eq.
+        destruct (Rle_or_lt y w) as [Hle | Hgt].
+        * right. exists w. split; [right; assumption|].
+          apply Rmax_right. assumption.
+        * right. exists y. split; [left; reflexivity|].
+          apply Rmax_left. lra.
+  Qed.
+
+  (** ** Dynamic-programming optimal matcher.
+
+      [dp_max_match boxes gts] returns the maximum total cost of any
+      injective assignment of boxes to gts, taking the first
+      candidate as the [Rmax_list] init so the result equals the
+      true maximum (not [0]) when all candidates are negative. *)
+
+  Fixpoint dp_max_match (boxes : list Box) (gts : list GT) : R :=
+    match boxes with
+    | [] => 0
+    | b :: rest =>
+        match gts with
+        | [] => 0
+        | g0 :: _ =>
+            Rmax_list
+              (cost b g0 + dp_max_match rest (dp_remove_first g0 gts))
+              (map (fun g =>
+                       cost b g + dp_max_match rest (dp_remove_first g gts))
+                   gts)
+        end
+    end.
+
+  (** ** Unfolding lemma keeps dp_remove_first folded when stepping. *)
+
+  Lemma dp_max_match_cons_cons :
+    forall (b : Box) (rest : list Box) (g0 : GT) (gs : list GT),
+      dp_max_match (b :: rest) (g0 :: gs) =
+      Rmax_list
+        (cost b g0 + dp_max_match rest (dp_remove_first g0 (g0 :: gs)))
+        (map (fun g =>
+                 cost b g + dp_max_match rest (dp_remove_first g (g0 :: gs)))
+             (g0 :: gs)).
+  Proof. intros. reflexivity. Qed.
+
+  (** ** matching_from_perm and matching_weight decomposition. *)
+
+  Lemma matching_from_perm_cons :
+    forall (b : Box) (rest : list Box) (h : GT) (tail : list GT),
+      matching_from_perm (b :: rest) (h :: tail) =
+      (b, h) :: matching_from_perm rest tail.
+  Proof.
+    intros. unfold matching_from_perm. simpl. reflexivity.
+  Qed.
+
+  Lemma matching_from_perm_empty_perm :
+    forall (boxes : list Box),
+      matching_from_perm boxes (@nil GT) = (@nil (Box * GT)).
+  Proof.
+    intros. unfold matching_from_perm. simpl.
+    destruct boxes; reflexivity.
+  Qed.
+
+  Lemma matching_from_perm_empty_boxes :
+    forall (perm : list GT),
+      matching_from_perm (@nil Box) perm = (@nil (Box * GT)).
+  Proof.
+    intros. unfold matching_from_perm. simpl. reflexivity.
+  Qed.
+
+  Lemma matching_weight_cons :
+    forall (b : Box) (g : GT) (rest : list (Box * GT)),
+      matching_weight cost ((b, g) :: rest) =
+      cost b g + matching_weight cost rest.
+  Proof.
+    intros. unfold matching_weight. simpl. reflexivity.
+  Qed.
+
+  Lemma matching_weight_nil :
+    matching_weight cost (@nil (Box * GT)) = 0.
+  Proof. unfold matching_weight. simpl. reflexivity. Qed.
+
+  (** ** Theorem 3: dp dominates any perm-derived matching weight. *)
+
+  Theorem dp_max_match_ge_perm :
+    forall boxes gts perm,
+      NoDup gts ->
+      Permutation perm gts ->
+      matching_weight cost (matching_from_perm boxes perm) <=
+      dp_max_match boxes gts.
+  Proof.
+    induction boxes as [|b rest IH]; intros gts perm Hnd Hperm.
+    - rewrite matching_from_perm_empty_boxes, matching_weight_nil.
+      simpl. apply Rle_refl.
+    - destruct gts as [|g0 gs] eqn:Egts.
+      + apply Permutation_sym, Permutation_nil in Hperm. subst perm.
+        rewrite matching_from_perm_empty_perm, matching_weight_nil.
+        simpl. apply Rle_refl.
+      + assert (Hperm_len : length perm = length (g0 :: gs))
+          by (apply Permutation_length; assumption).
+        destruct perm as [|h ptail]; [discriminate|].
+        assert (Hh_in : In h (g0 :: gs)).
+        { apply Permutation_in with (h :: ptail);
+            [assumption | left; reflexivity]. }
+        assert (Hperm_tail : Permutation ptail (dp_remove_first h (g0 :: gs))).
+        { destruct (dp_remove_first_in_split h (g0 :: gs) Hh_in)
+            as [l1 [l2 [Heq_split Hrm]]].
+          rewrite Hrm.
+          rewrite Heq_split in Hperm.
+          apply Permutation_cons_app_inv in Hperm.
+          exact Hperm. }
+        assert (Hnd_rm : NoDup (dp_remove_first h (g0 :: gs))).
+        { apply dp_remove_first_NoDup. assumption. }
+        rewrite matching_from_perm_cons.
+        rewrite matching_weight_cons.
+        pose proof (IH _ ptail Hnd_rm Hperm_tail) as IH_app.
+        eapply Rle_trans.
+        * apply Rplus_le_compat_l. exact IH_app.
+        * rewrite dp_max_match_cons_cons.
+          destruct Hh_in as [Heq | Hin_gs].
+          ** subst h. apply Rmax_list_init_le.
+          ** apply Rmax_list_in_le.
+             apply in_map_iff. exists h. split; [reflexivity|].
+             right. assumption.
+  Qed.
+
+  (** ** Theorem 4: some permutation-derived matching achieves dp's value. *)
+
+  Theorem dp_max_match_le_some_perm :
+    forall boxes gts,
+      NoDup gts ->
+      exists perm, Permutation perm gts /\
+                   dp_max_match boxes gts <=
+                   matching_weight cost (matching_from_perm boxes perm).
+  Proof.
+    induction boxes as [|b rest IH]; intros gts Hnd.
+    - exists gts. split; [apply Permutation_refl|].
+      rewrite matching_from_perm_empty_boxes, matching_weight_nil.
+      simpl. apply Rle_refl.
+    - destruct gts as [|g0 gs] eqn:Egts.
+      + exists []. split; [apply Permutation_refl|].
+        rewrite matching_from_perm_empty_perm, matching_weight_nil.
+        simpl. apply Rle_refl.
+      + rewrite dp_max_match_cons_cons.
+        destruct (Rmax_list_witness
+                    (cost b g0 + dp_max_match rest (dp_remove_first g0 (g0 :: gs)))
+                    (map (fun g =>
+                             cost b g + dp_max_match rest (dp_remove_first g (g0 :: gs)))
+                         (g0 :: gs)))
+          as [Hinit | [w [Hw_in Hw_eq]]].
+        * assert (Hg0_in : In g0 (g0 :: gs)) by (left; reflexivity).
+          assert (Hnd_rm : NoDup (dp_remove_first g0 (g0 :: gs)))
+            by (apply dp_remove_first_NoDup; assumption).
+          destruct (IH (dp_remove_first g0 (g0 :: gs)) Hnd_rm)
+            as [perm_rest [Hperm_rest Hperm_le]].
+          exists (g0 :: perm_rest). split.
+          ** apply Permutation_sym.
+             eapply Permutation_trans;
+               [apply (dp_remove_first_perm g0 (g0 :: gs) Hg0_in)|].
+             apply perm_skip. apply Permutation_sym. assumption.
+          ** rewrite matching_from_perm_cons, matching_weight_cons.
+             rewrite Hinit.
+             apply Rplus_le_compat_l. exact Hperm_le.
+        * apply in_map_iff in Hw_in as [g_opt [Heq_w Hg_in]].
+          subst w.
+          assert (Hnd_rm : NoDup (dp_remove_first g_opt (g0 :: gs)))
+            by (apply dp_remove_first_NoDup; assumption).
+          destruct (IH (dp_remove_first g_opt (g0 :: gs)) Hnd_rm)
+            as [perm_rest [Hperm_rest Hperm_le]].
+          exists (g_opt :: perm_rest). split.
+          ** apply Permutation_sym.
+             eapply Permutation_trans;
+               [apply (dp_remove_first_perm g_opt (g0 :: gs) Hg_in)|].
+             apply perm_skip. apply Permutation_sym. assumption.
+          ** rewrite matching_from_perm_cons, matching_weight_cons.
+             rewrite Hw_eq.
+             apply Rplus_le_compat_l. exact Hperm_le.
+  Qed.
+
+  (** ** Theorem 5: dp_max_match equals brute_match's weight. *)
+
+  Theorem dp_max_match_eq_brute_weight :
+    forall boxes gts,
+      NoDup gts ->
+      dp_max_match boxes gts = matching_weight cost (brute_match cost boxes gts).
+  Proof.
+    intros boxes gts Hnd. apply Rle_antisym.
+    - destruct (dp_max_match_le_some_perm boxes Hnd)
+        as [perm [Hperm Hle]].
+      eapply Rle_trans; [exact Hle|].
+      apply (brute_match_optimal_in_enumeration cost boxes gts
+              (matching_from_perm boxes perm)).
+      unfold all_brute_matchings. apply in_map_iff.
+      exists perm. split; [reflexivity|].
+      apply permutation_in_perms. apply Permutation_sym. assumption.
+    - pose proof (brute_match_in_enumeration cost boxes gts) as Hbrute_in.
+      unfold all_brute_matchings in Hbrute_in.
+      apply in_map_iff in Hbrute_in as [perm_b [Heq_b Hperm_b_in]].
+      pose proof (in_perms_permutation gts perm_b Hperm_b_in) as Hperm_b.
+      rewrite <- Heq_b.
+      apply (dp_max_match_ge_perm boxes Hnd).
+      apply Permutation_sym. assumption.
+  Qed.
+
+End DPMatching.
+
 Local Close Scope R_scope.
 
 (** ** Certifier extraction for the deployable CLI.
