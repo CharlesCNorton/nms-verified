@@ -6076,6 +6076,36 @@ Proof.
   apply le_INR. assumption.
 Qed.
 
+(** ** N-event union bound (Bonferroni list).
+
+    Generalises [bonferroni_two] from two events to a list of events.
+    For [M] events, the probability of their disjunction is bounded
+    by the sum of individual probabilities. This is the chaining
+    step in the standard PAC argument: with [M] hypotheses each
+    having Chebyshev-bounded deviation, the union bound caps the
+    probability that any one deviates by [M / (n eps²)]. *)
+
+Theorem bonferroni_list :
+  forall samples (events : list (R -> bool)),
+    prob_uniform samples
+      (fun x => existsb (fun e => e x) events) <=
+    fold_right Rplus 0 (map (fun e => prob_uniform samples e) events).
+Proof.
+  intros samples events.
+  induction events as [|e rest IH]; simpl.
+  - unfold prob_uniform.
+    destruct (Nat.eqb_spec (length samples) 0); [lra|].
+    assert (Hlen_pos : 0 < INR (length samples)).
+    { destruct (length samples); [contradiction | apply lt_0_INR; lia]. }
+    assert (Hfilter : forall l : list R, filter (fun _ : R => false) l = []).
+    { intros l. induction l as [|x rest IHs]; simpl; [reflexivity | assumption]. }
+    rewrite (Hfilter samples). simpl. lra.
+  - eapply Rle_trans.
+    + apply (bonferroni_two samples e
+              (fun x => existsb (fun e0 => e0 x) rest)).
+    + apply Rplus_le_compat_l. exact IH.
+Qed.
+
 (** ** Chebyshev-style concentration: variance-bounded tail.
 
     The full Hoeffding inequality
