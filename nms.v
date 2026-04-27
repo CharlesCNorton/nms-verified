@@ -7727,6 +7727,153 @@ Proof.
   exact e20_separated_check_true.
 Qed.
 
+(** ******************************************************************** *)
+(** *      Part X. Per-layer quantization with slack accumulation        *)
+(** ******************************************************************** *)
+
+(** [real_lipschitz_to_nat] absorbs one bit of quantization error
+    at the score head only. For a deeper network, intermediate
+    activations are quantized too — fixed-point hardware applies a
+    quantize-then-dequantize round-trip after each layer. Each
+    layer adds [q_eps] of additive error at the quantization site;
+    subsequent layers' Lipschitz responses amplify it.
+
+    [chain_lip Ls = L_1 * L_2 * ... * L_N] computes the global
+    Lipschitz constant. [chain_quant_slack Ls] computes the
+    cumulative slack as a sum of suffix products: the quantization
+    at layer i contributes [q_eps] amplified by [L_{i+1} * ... *
+    L_N]. The recursion is [chain_quant_slack (L :: rest) =
+    q_eps * chain_lip rest + chain_quant_slack rest].
+
+    [apply_quant_chain_lipschitz] proves the quantized chain is
+    [chain_lip Ls]-Lipschitz with additive slack [2 *
+    chain_quant_slack Ls], end-to-end across N layers. The slack
+    accumulates additively, and the L-amplification of earlier
+    layers' quantization errors is captured exactly by the suffix
+    products in [chain_quant_slack].
+
+    Theorems delivered:
+
+      Theorem 1.  quant_lipschitz_step          (single-layer error)
+      Theorem 2.  apply_quant_chain_lipschitz   (N-layer end-to-end) *)
+
+Local Open Scope R_scope.
+
+Section MultilayerQuantLipschitz.
+
+  Variable q : R -> R.
+  Variable q_eps : R.
+  Hypothesis q_eps_nonneg : 0 <= q_eps.
+  Hypothesis q_bounded : forall x, Rabs (q x - x) <= q_eps.
+
+  Fixpoint apply_quant_chain (fs : list (R -> R)) (x : R) : R :=
+    match fs with
+    | [] => x
+    | f :: rest => apply_quant_chain rest (q (f x))
+    end.
+
+  Fixpoint chain_lip (Ls : list R) : R :=
+    match Ls with
+    | [] => 1
+    | L :: rest => L * chain_lip rest
+    end.
+
+  Fixpoint chain_quant_slack (Ls : list R) : R :=
+    match Ls with
+    | [] => 0
+    | L :: rest => q_eps * chain_lip rest + chain_quant_slack rest
+    end.
+
+  Lemma forall2_lipschitz_first :
+    forall (fs : list (R -> R)) (Ls : list R),
+      Forall2 Lipschitz Ls fs -> Forall (fun L => 0 <= L) Ls.
+  Proof.
+    intros fs Ls H.
+    induction H as [|L f rest_Ls rest_fs HfL Hrest IH].
+    - constructor.
+    - constructor; [apply (lip_nonneg HfL) | exact IH].
+  Qed.
+
+  Lemma chain_lip_nonneg :
+    forall Ls,
+      Forall (fun L => 0 <= L) Ls ->
+      0 <= chain_lip Ls.
+  Proof.
+    induction Ls as [|L rest IH]; intros Hall; simpl; [lra|].
+    inversion Hall; subst.
+    apply Rmult_le_pos; [assumption | apply IH; assumption].
+  Qed.
+
+  Lemma chain_quant_slack_nonneg :
+    forall Ls,
+      Forall (fun L => 0 <= L) Ls ->
+      0 <= chain_quant_slack Ls.
+  Proof.
+    induction Ls as [|L rest IH]; intros Hall; simpl; [lra|].
+    inversion Hall; subst.
+    pose proof (chain_lip_nonneg H2) as Hcl.
+    pose proof (IH H2) as Hcs.
+    apply Rplus_le_le_0_compat; [|assumption].
+    apply Rmult_le_pos; assumption.
+  Qed.
+
+  (** Theorem 1. Single-layer error bound: a Lipschitz layer
+      followed by quantization produces output within
+      [L * |x - y| + 2 * q_eps] of the ideal Lipschitz bound. *)
+
+  Theorem quant_lipschitz_step :
+    forall (f : R -> R) (L : R) (x y : R),
+      Lipschitz L f ->
+      Rabs (q (f x) - q (f y)) <= L * Rabs (x - y) + 2 * q_eps.
+  Proof.
+    intros f L x y Hlip.
+    pose proof (q_bounded (f x)) as Hex.
+    pose proof (q_bounded (f y)) as Hey.
+    pose proof (lip_bound Hlip x y) as Hf.
+    assert (Htri : Rabs (q (f x) - q (f y)) <=
+                   Rabs (q (f x) - f x) + Rabs (f x - f y) +
+                   Rabs (f y - q (f y))).
+    { replace (q (f x) - q (f y))
+         with ((q (f x) - f x) + (f x - f y) + (f y - q (f y))) by lra.
+      eapply Rle_trans; [apply Rabs_triang|].
+      apply Rplus_le_compat_r. apply Rabs_triang. }
+    assert (Hey' : Rabs (f y - q (f y)) <= q_eps).
+    { replace (f y - q (f y)) with (-(q (f y) - f y)) by lra.
+      rewrite Rabs_Ropp. exact Hey. }
+    lra.
+  Qed.
+
+  (** Theorem 2. End-to-end quantized chain Lipschitz bound: the
+      N-layer chain [apply_quant_chain fs] is
+      [chain_lip Ls]-Lipschitz with additive slack
+      [2 * chain_quant_slack Ls]. The slack accumulates by suffix
+      products of subsequent Lipschitz constants. *)
+
+  Theorem apply_quant_chain_lipschitz :
+    forall (fs : list (R -> R)) (Ls : list R),
+      Forall2 Lipschitz Ls fs ->
+      forall x y,
+        Rabs (apply_quant_chain fs x - apply_quant_chain fs y) <=
+        chain_lip Ls * Rabs (x - y) + 2 * chain_quant_slack Ls.
+  Proof.
+    intros fs Ls Hlip.
+    induction Hlip as [|L f rest_Ls rest_fs HfL Hrest IH].
+    - intros x y. simpl. rewrite Rmult_1_l. lra.
+    - intros x y. simpl.
+      pose proof (quant_lipschitz_step x y HfL) as Hstep.
+      pose proof (IH (q (f x)) (q (f y))) as Hrec.
+      pose proof (lip_nonneg HfL) as HL_nn.
+      pose proof (chain_lip_nonneg (forall2_lipschitz_first Hrest)) as Hcl_nn.
+      pose proof (Rabs_pos (q (f x) - q (f y))) as Hqp.
+      pose proof (Rabs_pos (x - y)) as Hxyp.
+      eapply Rle_trans; [exact Hrec|].
+      nra.
+  Qed.
+
+End MultilayerQuantLipschitz.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
