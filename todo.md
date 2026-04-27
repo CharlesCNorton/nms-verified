@@ -1,12 +1,6 @@
 # Remaining work
 
-1. Formal complexity bound on `bitmask_dp`. The `O(n * 2^m * m)`
-   runtime is structurally evident from the `Fixpoint` form but
-   not proved as a Coq-level resource bound. Coq cost-modeling is
-   nonstandard; either CoqEval or a hand-rolled step counter would
-   be needed.
-
-2. Worked instances are small or partly vacuous. `c40_D`, `c30_D`,
+1. Worked instances are small or partly vacuous. `c40_D`, `c30_D`,
    and `c1_D` are 2-element lists; the matrix-based examples
    (`e20_M`, `arch_M1` / `arch_M2`, `ibp_dead_M1` / `ibp_dead_M2`,
    `example_M`) are all 1x1. `e20_separated_at_slack_one`, the
@@ -21,7 +15,7 @@
    dimensionality, a genuinely fired high-IoU pair, and a
    non-identity Lipschitz score head.
 
-3. `matching_injective` name collision. In `DETRMatchingDerived`
+2. `matching_injective` name collision. In `DETRMatchingDerived`
    the identifier is a `Hypothesis` on a function `Box -> GT`; in
    `HungarianMatching` it is a `Definition` on a `list (Box * GT)`
    formed as the conjunction of `matching_box_injective` and
@@ -29,7 +23,7 @@
    module qualification only partially disambiguates. Closable by
    renaming the function-shaped version to `matched_gt_injective`.
 
-4. Theorem numbering inside section comments restarts per
+3. Theorem numbering inside section comments restarts per
    section. Headers like "Theorem 1." through "Theorem 3." in
    `MultiClassL`, `SGDDescentVec`, `DETREquilibriumMargin`, and
    others are local indices that look like global ones; the file

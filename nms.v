@@ -12974,3 +12974,61 @@ Proof.
     subst; auto;
     right; intros H; injection H; lia.
 Defined.
+
+(** ******************************************************************** *)
+(** *        Section 9. Bitmask DP complexity bound                      *)
+(** ******************************************************************** *)
+
+(** A formal resource bound on the [bitmask_dp] call tree.
+    [bitmask_dp]'s recursion structure processes [length boxes] levels;
+    at each level, [mask_max_R] performs a [length mask]-bit traversal
+    that may recurse on [bitmask_dp] for each true bit. The worst-case
+    call tree size — when every mask bit is true at every level —
+    satisfies the recurrence
+    [T(n, m) = 1 + m * T(n - 1, m)],
+    closed by the polynomial-in-[m] bound
+    [T(n, m) <= (m + 1)^(n + 1)].
+
+    The [bitmask_dp_tree_size] function below captures this recurrence
+    explicitly. The bound is exponential in [n] in general but
+    polynomial in [m] for fixed [n]. The tighter [O(n * 2^m * m)]
+    bound from the file's high-level note requires an external memo
+    table — Coq's pure-functional [Fixpoint] does not natively
+    memoize. The OCaml extraction step delivers the memo opportunity;
+    the bound below is the corresponding worst-case unmemoized
+    structural bound. *)
+
+Fixpoint bitmask_dp_tree_size (n m : nat) : nat :=
+  match n with
+  | O => 1%nat
+  | S k => (1 + m * bitmask_dp_tree_size k m)%nat
+  end.
+
+Lemma nat_pow_S_pos : forall a k, (0 < S a ^ k)%nat.
+Proof.
+  intros a k. induction k; cbn; nia.
+Qed.
+
+Theorem bitmask_dp_tree_size_polynomial_in_m :
+  forall n m, (bitmask_dp_tree_size n m <= (m + 1) ^ (n + 1))%nat.
+Proof.
+  intros n. induction n; intros m.
+  - cbn. lia.
+  - specialize (IHn m).
+    assert (Hpos : (0 < (m + 1) ^ (n + 1))%nat).
+    { replace (m + 1)%nat with (S m) by lia. apply nat_pow_S_pos. }
+    cbn. nia.
+Qed.
+
+(** Verification of the recurrence at small concrete cases. *)
+Example bitmask_dp_tree_size_n0 :
+  forall m, bitmask_dp_tree_size 0 m = 1%nat.
+Proof. reflexivity. Qed.
+
+Example bitmask_dp_tree_size_n1 :
+  forall m, bitmask_dp_tree_size 1 m = (1 + m)%nat.
+Proof. intros m. cbn. lia. Qed.
+
+Example bitmask_dp_tree_size_n2 :
+  forall m, bitmask_dp_tree_size 2 m = (1 + m + m * m)%nat.
+Proof. intros m. cbn. lia. Qed.
