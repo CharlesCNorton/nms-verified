@@ -8003,6 +8003,111 @@ Qed.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XIII. SGD global convergence under PL inequality          *)
+(** ******************************************************************** *)
+
+(** Part VI's [sgd_telescoping_vec] (and Part XI's wrapper) prove
+    stationary-point convergence: cumulative grad-norm-squared is
+    bounded, so the minimum gradient norm vanishes. This leaves
+    open whether the stationary point reached is a global minimum.
+    The Polyak-Lojasiewicz inequality
+
+        2 * mu * (f(theta) - f_lower) <= |grad f(theta)|^2
+
+    promotes stationary to global: at any theta with small gradient
+    norm, [f(theta) - f_lower] is small. Combined with the descent
+    inequality [f(theta_{t+1}) <= f(theta_t) - eta/2 * |grad|^2],
+    this yields linear convergence:
+
+        f(theta_T) - f_lower <= (1 - eta * mu)^T * (f(theta_0) - f_lower)
+
+    The geometric factor (1 - eta * mu) gives a rate strictly faster
+    than O(1/T). Composing with Part XI's training infrastructure:
+    SGD on a non-negative smooth loss with PL constant mu converges
+    geometrically to the global minimum, which for L_separated_sq is
+    zero loss, and zero loss equals the Separated locus (Theorem
+    L_separated_zero_iff_separated, lifted as item 2 of remaining
+    work).
+
+    Theorems delivered:
+
+      Theorem 1.  sgd_pl_one_step           (single-step contraction)
+      Theorem 2.  sgd_pl_linear_convergence (T-step geometric rate) *)
+
+Local Open Scope R_scope.
+
+Section ConvergenceUnderPL.
+
+  Variable n : nat.
+  Variable f : list R -> R.
+  Variable grad : list R -> list R.
+  Variable Lsm : R.
+  Hypothesis Lsm_pos : 0 < Lsm.
+  Hypothesis grad_dim :
+    forall theta, length theta = n -> length (grad theta) = n.
+  Hypothesis quad_upper_bound :
+    forall x y, length x = n -> length y = n ->
+      f y <= f x + dot (grad x) (vec_sub y x) +
+              Lsm / 2 * dot (vec_sub y x) (vec_sub y x).
+
+  Variable f_lower : R.
+  Hypothesis f_lower_bound :
+    forall theta, length theta = n -> f_lower <= f theta.
+
+  Variable mu : R.
+  Hypothesis mu_pos : 0 < mu.
+  Hypothesis pl_inequality :
+    forall theta, length theta = n ->
+      2 * mu * (f theta - f_lower) <= dot (grad theta) (grad theta).
+
+  (** Theorem 1. Single-step linear contraction under PL. *)
+
+  Theorem sgd_pl_one_step :
+    forall theta eta,
+      length theta = n ->
+      0 < eta -> eta * Lsm <= 1 ->
+      f (sgd_step_vec grad eta theta) - f_lower <=
+      (1 - eta * mu) * (f theta - f_lower).
+  Proof.
+    intros theta eta Hlen Heta_pos HetaLsm.
+    pose proof (sgd_descent_vec f grad grad_dim quad_upper_bound
+                  theta Hlen Heta_pos HetaLsm) as Hdesc.
+    pose proof (pl_inequality theta Hlen) as Hpl.
+    nra.
+  Qed.
+
+  (** Theorem 2. T-step geometric convergence to the global minimum.
+      The factor [(1 − η μ)^T] decays geometrically when [η μ < 1]. *)
+
+  Theorem sgd_pl_linear_convergence :
+    forall theta0 eta T,
+      length theta0 = n ->
+      0 < eta -> eta * Lsm <= 1 -> eta * mu <= 1 ->
+      f (sgd_iterate_vec grad eta theta0 T) - f_lower <=
+      (1 - eta * mu) ^ T * (f theta0 - f_lower).
+  Proof.
+    intros theta0 eta T Hlen Heta_pos HetaLsm Hetamu_le.
+    induction T as [|T' IH].
+    - simpl. rewrite Rmult_1_l. lra.
+    - simpl.
+      pose proof (sgd_iterate_vec_length grad grad_dim eta theta0 T' Hlen) as Hlen_T'.
+      pose proof (sgd_pl_one_step (sgd_iterate_vec grad eta theta0 T')
+                    Hlen_T' Heta_pos HetaLsm) as Hone.
+      pose proof (f_lower_bound (sgd_iterate_vec grad eta theta0 T') Hlen_T')
+        as HfT_low.
+      assert (H1mu_nn : 0 <= 1 - eta * mu) by lra.
+      eapply Rle_trans; [exact Hone|].
+      apply Rle_trans with ((1 - eta * mu) *
+                             ((1 - eta * mu) ^ T' * (f theta0 - f_lower))).
+      + apply Rmult_le_compat_l; [exact H1mu_nn | exact IH].
+      + lra.
+  Qed.
+
+End ConvergenceUnderPL.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
