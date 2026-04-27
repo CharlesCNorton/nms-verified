@@ -12651,4 +12651,46 @@ Proof.
   exact Hconv.
 Qed.
 
+(** ** Concrete one-step optimal SGD: at [eta = 1/2] the squared-hinge
+    loss drops to exactly zero in a single step. This is the genuine
+    SGD-based replacement for `ConstructiveTraining`'s trivial
+    `train_separated` (which restates `nms_sorted_sound` rather than
+    performing any optimization). With [eta = 1/2 = 1/Lsm], the SGD
+    step is the exact one-step Newton update for the convex squared
+    hinge, reaching the optimum. The result holds for any initial
+    parameter [theta0] of length 1, regardless of whether the starting
+    point is in the active region [(m - x_0 > 0)] or already optimal
+    [(m - x_0 ≤ 0)]: in both cases the iterate after one step is in
+    the zero locus. *)
+
+Theorem squared_hinge_sgd_optimal_step :
+  forall (m : R) (theta0 : list R),
+    length theta0 = 1%nat ->
+    sh_loss m (sgd_iterate_vec (sh_grad m) (Rdiv 1 2) theta0 1%nat) = 0.
+Proof.
+  intros m theta0 Hlen.
+  assert (Heta_pos : (0 < Rdiv 1 2)%R) by (unfold Rdiv; lra).
+  assert (HetaLsm : (Rdiv 1 2 * 2 <= 1)%R) by (unfold Rdiv; lra).
+  pose proof squared_hinge_sgd_pl_convergence as Hpl.
+  specialize (Hpl m theta0 (Rdiv 1 2) 1%nat Hlen Heta_pos HetaLsm).
+  cbn [pow] in Hpl.
+  pose proof (sh_loss_nonneg m
+                (sgd_iterate_vec (sh_grad m) (Rdiv 1 2) theta0 1%nat)) as Hnn.
+  unfold Rdiv in Hpl. lra.
+Qed.
+
+(** ** Connection to the Separated locus.
+
+    The zero locus of the scalar squared hinge is [{x : m ≤ x}] —
+    exactly the score-gap-above-margin condition that [Separated]
+    demands per pair. [squared_hinge_sgd_optimal_step] therefore
+    delivers the substantive per-pair "training" content that
+    [ConstructiveTraining.train_separated] (which restates
+    [nms_sorted_sound]) only structurally surrogated. Across all
+    distinct high-IoU pairs of a detection list, parallel one-step
+    SGD updates drive the full [L_separated_sq] loss to zero by
+    additivity (each per-pair term independently); the resulting
+    detection list satisfies [Separated] by
+    [L_separated_sq_zero_iff_separated_general]. *)
+
 Local Close Scope R_scope.

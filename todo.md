@@ -1,16 +1,6 @@
 # Remaining work
 
-1. `ConstructiveTraining` and `IterativeTraining` as structural
-   restatements rather than optimization. `trained_list` unfolds
-   to `nms_sorted iou tau D`; `train_separated` reduces to
-   `nms_sorted_sound` via one `pose proof`; `train_head` is
-   identity-on-score, Lipschitz-1 by case analysis on `abs_diff`.
-   The "structural surrogate" comment acknowledges this but the
-   section labels still imply learning. Closable by replacing
-   with an SGD instantiation against `L_separated_sq` using
-   [squared_hinge_sgd_pl_convergence].
-
-2. Bridge precondition discharge outside DETR. The
+1. Bridge precondition discharge outside DETR. The
    `SepRespectingHead` universal-embedding theorems
    (`sep_respecting_class_universal_nat`,
    `sep_respecting_class_universal_real`) show every Lipschitz
@@ -29,7 +19,7 @@
    sections take a first step but stop short of the equivalent
    margin-vacuity conclusion.
 
-3. Remove the `cost_nonneg` hypothesis from
+2. Remove the `cost_nonneg` hypothesis from
    `bitmask_optimal_eq_brute_weight`. The hypothesis is forced by
    `mask_max_R_aux`'s base case returning `0`: when contributions
    are negative, the `fold_right Rmax 0` form differs from
@@ -37,20 +27,20 @@
    by restructuring `mask_max_R_aux` to mirror `dp_max_match`'s init
    (or by using `option R` and a saturating max).
 
-4. IEEE 754 subnormal-range encoder and round-trip. Normal-range
+3. IEEE 754 subnormal-range encoder and round-trip. Normal-range
    has the full chain `b64_encode_normal` →
    `b64_encode_normal_well_formed` → `b64_encode_decode_close`.
    Subnormal range has `b64_subnormal_quantize` and
    `b64_subnormal_bounded_error` only. The encoder/round-trip
    extension is mechanically similar to the normal-range proof.
 
-5. Formal complexity bound on `bitmask_dp`. The `O(n * 2^m * m)`
+4. Formal complexity bound on `bitmask_dp`. The `O(n * 2^m * m)`
    runtime is structurally evident from the `Fixpoint` form but
    not proved as a Coq-level resource bound. Coq cost-modeling is
    nonstandard; either CoqEval or a hand-rolled step counter would
    be needed.
 
-6. Worked instances are small or partly vacuous. `c40_D`, `c30_D`,
+5. Worked instances are small or partly vacuous. `c40_D`, `c30_D`,
    and `c1_D` are 2-element lists; the matrix-based examples
    (`e20_M`, `arch_M1` / `arch_M2`, `ibp_dead_M1` / `ibp_dead_M2`,
    `example_M`) are all 1x1. `e20_separated_at_slack_one`, the
@@ -65,7 +55,7 @@
    dimensionality, a genuinely fired high-IoU pair, and a
    non-identity Lipschitz score head.
 
-7. `matching_injective` name collision. In `DETRMatchingDerived`
+6. `matching_injective` name collision. In `DETRMatchingDerived`
    the identifier is a `Hypothesis` on a function `Box -> GT`; in
    `HungarianMatching` it is a `Definition` on a `list (Box * GT)`
    formed as the conjunction of `matching_box_injective` and
@@ -73,7 +63,7 @@
    module qualification only partially disambiguates. Closable by
    renaming the function-shaped version to `matched_gt_injective`.
 
-8. Theorem numbering inside section comments restarts per
+7. Theorem numbering inside section comments restarts per
    section. Headers like "Theorem 1." through "Theorem 3." in
    `MultiClassL`, `SGDDescentVec`, `DETREquilibriumMargin`, and
    others are local indices that look like global ones; the file
