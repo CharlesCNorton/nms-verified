@@ -8194,6 +8194,212 @@ Qed.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XV. Multi-class L_separated with cross-class penalty     *)
+(** ******************************************************************** *)
+
+(** Part V's [L_separated] is single-class. Real detectors emit a
+    score vector (one nat per class) per box; Part IV's [mc_det],
+    [mc_one_peak], [mc_no_tie_clash] capture this. [L_mc_separated]
+    is the Real-valued loss summing [mc_pair_violation] over every
+    pair of detections and every class in [cs].
+
+    Under the [unique_boxes] hypothesis (distinct mc_dets carry
+    distinct boxes — by construction in slot-based architectures
+    like DETR), zero loss implies the cs-restricted invariants
+    [mc_one_peak_cs] and [mc_no_tie_clash_cs]. The reduction goes
+    via [fold_right_Rplus_zero_iff] to per-triple zero, then the
+    per-triple Separated-1 condition feeds the predicate
+    conclusions.
+
+    Theorems delivered:
+
+      Theorem 1.  mc_pair_violation_zero_separation
+      Theorem 2.  L_mc_separated_zero_implies_invariants *)
+
+Local Open Scope R_scope.
+
+Section MultiClassL.
+
+  Variable Box : Type.
+  Variable Class : Type.
+  Variable iou_b : Box -> Box -> nat.
+  Variable tau : nat.
+  Variable theta : nat.
+  Variable box_eq_dec : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2}.
+
+  Definition mc_pair_violation
+      (md1 md2 : mc_det Box Class) (c : Class) : R :=
+    if box_eq_dec (mc_box md1) (mc_box md2) then 0
+    else if Nat.leb tau (iou_b (mc_box md1) (mc_box md2)) then
+      let s1 := INR (mc_score md1 c) in
+      let s2 := INR (mc_score md2 c) in
+      let lower := Rmin s1 s2 in
+      let upper := Rmax s1 s2 in
+      Rmax 0 (1 - (upper - lower)) + Rmax 0 (lower - INR theta + 1)
+    else 0.
+
+  Lemma mc_pair_violation_nonneg :
+    forall md1 md2 c, 0 <= mc_pair_violation md1 md2 c.
+  Proof.
+    intros md1 md2 c. unfold mc_pair_violation.
+    destruct (box_eq_dec _ _); [apply Rle_refl|].
+    destruct (Nat.leb tau _); [|apply Rle_refl].
+    apply Rplus_le_le_0_compat; apply Rmax_l.
+  Qed.
+
+  Definition L_mc_separated
+      (mds : list (mc_det Box Class)) (cs : list Class) : R :=
+    fold_right Rplus 0
+      (flat_map (fun md1 =>
+                   flat_map (fun md2 =>
+                              map (fun c => mc_pair_violation md1 md2 c) cs)
+                            mds)
+                mds).
+
+  Lemma L_mc_separated_nonneg :
+    forall mds cs, 0 <= L_mc_separated mds cs.
+  Proof.
+    intros mds cs.
+    unfold L_mc_separated.
+    apply fold_right_Rplus_nonneg.
+    intros x Hx.
+    apply in_flat_map in Hx as [md1 [_ Hx1]].
+    apply in_flat_map in Hx1 as [md2 [_ Hx2]].
+    apply in_map_iff in Hx2 as [c [Heq _]]. subst x.
+    apply mc_pair_violation_nonneg.
+  Qed.
+
+  (** Theorem 1. Per-triple zero decomposition. *)
+
+  Theorem mc_pair_violation_zero_separation :
+    forall md1 md2 c,
+      (1 <= theta)%nat ->
+      mc_pair_violation md1 md2 c = 0 ->
+      mc_box md1 = mc_box md2 \/
+      (iou_b (mc_box md1) (mc_box md2) < tau)%nat \/
+      (mc_score md1 c + 1 <= mc_score md2 c /\ mc_score md1 c < theta)%nat \/
+      (mc_score md2 c + 1 <= mc_score md1 c /\ mc_score md2 c < theta)%nat.
+  Proof.
+    intros md1 md2 c Hth Hzero.
+    unfold mc_pair_violation in Hzero.
+    destruct (box_eq_dec (mc_box md1) (mc_box md2)) as [Hbeq | Hbne].
+    - left. assumption.
+    - right.
+      destruct (Nat.leb_spec tau (iou_b (mc_box md1) (mc_box md2)))
+        as [Hge | Hlt].
+      + right.
+        set (s1 := INR (mc_score md1 c)) in *.
+        set (s2 := INR (mc_score md2 c)) in *.
+        set (lower := Rmin s1 s2) in *.
+        set (upper := Rmax s1 s2) in *.
+        assert (Hgap : Rmax 0 (1 - (upper - lower)) = 0 /\
+                      Rmax 0 (lower - INR theta + 1) = 0).
+        { pose proof (Rmax_l 0 (1 - (upper - lower))) as H1.
+          pose proof (Rmax_l 0 (lower - INR theta + 1)) as H2.
+          split; lra. }
+        destruct Hgap as [Hg1 Hg2].
+        assert (Hg1' : upper - lower >= 1).
+        { destruct (Rle_dec 0 (1 - (upper - lower))) as [Hle' | Hgt'].
+          - rewrite (Rmax_right _ _ Hle') in Hg1. lra.
+          - lra. }
+        assert (Hg2' : lower < INR theta).
+        { destruct (Rle_dec 0 (lower - INR theta + 1)) as [Hle' | Hgt'].
+          - rewrite (Rmax_right _ _ Hle') in Hg2. lra.
+          - lra. }
+        destruct (Rle_lt_dec s1 s2) as [Hss | Hss].
+        * left.
+          assert (Hlow : lower = s1) by (apply Rmin_left; assumption).
+          assert (Hup : upper = s2) by (apply Rmax_right; assumption).
+          rewrite Hlow in Hg2'. rewrite Hlow, Hup in Hg1'.
+          unfold s1, s2 in *.
+          split.
+          -- apply INR_le. rewrite plus_INR. simpl. lra.
+          -- apply INR_lt. lra.
+        * right.
+          assert (Hlow : lower = s2) by (apply Rmin_right; lra).
+          assert (Hup : upper = s1) by (apply Rmax_left; lra).
+          rewrite Hlow in Hg2'. rewrite Hlow, Hup in Hg1'.
+          unfold s1, s2 in *.
+          split.
+          -- apply INR_le. rewrite plus_INR. simpl. lra.
+          -- apply INR_lt. lra.
+      + left. assumption.
+  Qed.
+
+  Definition mc_one_peak_cs
+      (cs : list Class) (mds : list (mc_det Box Class)) : Prop :=
+    forall md md' c, In md mds -> In md' mds -> In c cs ->
+      (tau <= iou_b (mc_box md) (mc_box md'))%nat ->
+      (mc_score md c < mc_score md' c)%nat ->
+      (mc_score md c < theta)%nat.
+
+  Definition mc_no_tie_clash_cs
+      (cs : list Class) (mds : list (mc_det Box Class)) : Prop :=
+    forall md md' c, In md mds -> In md' mds -> In c cs ->
+      md <> md' ->
+      mc_score md c = mc_score md' c ->
+      (iou_b (mc_box md) (mc_box md') < tau)%nat.
+
+  Definition unique_boxes_mc (mds : list (mc_det Box Class)) : Prop :=
+    forall md md', In md mds -> In md' mds ->
+                   mc_box md = mc_box md' -> md = md'.
+
+  (** Theorem 2. Zero loss implies the cs-restricted invariants
+      under unique_boxes. *)
+
+  Theorem L_mc_separated_zero_implies_invariants :
+    forall (mds : list (mc_det Box Class)) (cs : list Class),
+      (1 <= theta)%nat ->
+      unique_boxes_mc mds ->
+      L_mc_separated mds cs = 0 ->
+      mc_one_peak_cs cs mds /\ mc_no_tie_clash_cs cs mds.
+  Proof.
+    intros mds cs Hth Huniq HL.
+    assert (Hnn : forall x,
+      In x (flat_map (fun md1 =>
+                        flat_map (fun md2 =>
+                                    map (fun c => mc_pair_violation md1 md2 c) cs)
+                                 mds)
+                     mds) -> 0 <= x).
+    { intros x Hx.
+      apply in_flat_map in Hx as [md1 [_ Hx1]].
+      apply in_flat_map in Hx1 as [md2 [_ Hx2]].
+      apply in_map_iff in Hx2 as [c [Heq _]]. subst x.
+      apply mc_pair_violation_nonneg. }
+    pose proof (proj1 (fold_right_Rplus_zero_iff _ Hnn) HL) as Hall_zero.
+    assert (Hpv : forall md1 md2 c,
+              In md1 mds -> In md2 mds -> In c cs ->
+              mc_pair_violation md1 md2 c = 0).
+    { intros md1 md2 c Hin1 Hin2 Hinc.
+      apply Hall_zero.
+      apply in_flat_map. exists md1. split; [assumption|].
+      apply in_flat_map. exists md2. split; [assumption|].
+      apply in_map_iff. exists c. split; [reflexivity|assumption]. }
+    split.
+    - intros md1 md2 c Hin1 Hin2 Hinc Hiou Hlt.
+      pose proof (mc_pair_violation_zero_separation _ _ _ Hth
+                    (Hpv md1 md2 c Hin1 Hin2 Hinc))
+        as [Hbeq | [Hiou_lt | [[Hgap Hlt'] | [Hgap Hlt']]]].
+      + pose proof (Huniq md1 md2 Hin1 Hin2 Hbeq) as Hmd_eq.
+        subst md2. lia.
+      + lia.
+      + assumption.
+      + lia.
+    - intros md1 md2 c Hin1 Hin2 Hinc Hne Heq.
+      pose proof (mc_pair_violation_zero_separation _ _ _ Hth
+                    (Hpv md1 md2 c Hin1 Hin2 Hinc))
+        as [Hbeq | [Hiou_lt | [[Hgap _] | [Hgap _]]]].
+      + exfalso. apply Hne. apply (Huniq md1 md2 Hin1 Hin2 Hbeq).
+      + assumption.
+      + lia.
+      + lia.
+  Qed.
+
+End MultiClassL.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
