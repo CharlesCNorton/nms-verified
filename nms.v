@@ -12493,4 +12493,162 @@ Proof.
   intros sigma _. apply Rmax_list_nonneg. apply Rle_refl.
 Qed.
 
+(** ******************************************************************** *)
+(** *         Section 7. Squared-hinge PL convergence basin              *)
+(** ******************************************************************** *)
+
+(** Closes item 1 of the remaining-work list: a concrete instantiation
+    of [sgd_pl_linear_convergence] for the squared-hinge surrogate.
+
+    [L_separated_sq] is a sum of squared-hinge terms over distinct
+    pairs of detections. Each per-pair term is the canonical scalar
+    squared-hinge [sq_hinge_at m x = (Rmax 0 (m - x))^2], which is
+    globally PL with constant [mu = 2] (active region is locally
+    quadratic with Hessian [2]; inactive region has [f = 0] and
+    [grad = 0], satisfying PL vacuously). The smoothness constant is
+    [Lsm = 2] (the maximum of the two regional Hessians). With [mu = 2]
+    and [Lsm = 2], the standard SGD step [eta = 1/2] saturates both
+    [eta * Lsm <= 1] and [eta * mu <= 1], delivering geometric
+    convergence at rate [(1 - 1)^T = 0] — i.e., one-step convergence
+    on the active region. For smaller step sizes the geometric rate
+    is [(1 - 2 * eta)^T].
+
+    The "basin of attraction" is the entire real line — PL holds
+    globally for the scalar squared-hinge with respect to its zero
+    locus [{x : x >= m}]. The full [L_separated_sq] sum is PL within
+    a basin where each per-pair term is independently in its
+    convex-quadratic region (no two pairs straddle their kinks
+    simultaneously); within that basin, the per-pair PL constants
+    compose additively. *)
+
+Local Open Scope R_scope.
+
+(** ** Scalar squared-hinge as a 1-dimensional vector loss. *)
+
+Definition sh_loss (m : R) (theta : list R) : R :=
+  match theta with
+  | [x] => sq_hinge_at m x
+  | _ => 0
+  end.
+
+Definition sh_grad (m : R) (theta : list R) : list R :=
+  match theta with
+  | [x] => [sq_hinge_deriv m x]
+  | _ => []
+  end.
+
+Lemma sh_grad_dim :
+  forall m theta, length theta = 1%nat -> length (sh_grad m theta) = 1%nat.
+Proof.
+  intros m theta Hlen.
+  destruct theta as [|x [|y rest]]; cbn in Hlen; try discriminate.
+  cbn. reflexivity.
+Qed.
+
+Lemma sh_loss_nonneg :
+  forall m theta, 0 <= sh_loss m theta.
+Proof.
+  intros m theta. unfold sh_loss.
+  destruct theta as [|x [|y rest]]; try (apply Rle_refl).
+  unfold sq_hinge_at.
+  pose proof (Rle_0_sqr (Rmax 0 (m - x))) as Hsq.
+  unfold Rsqr in Hsq.
+  cbn. lra.
+Qed.
+
+(** ** Quadratic upper bound for the squared hinge with [Lsm = 2].
+
+    Reduces to a case split on whether [x] and [y] are in the active
+    region ([x < m]) or the inactive region ([x >= m]). All four
+    combinations satisfy [f y <= f x + f'(x)(y - x) + (y - x)^2]. *)
+
+Lemma sh_quad_upper_scalar :
+  forall m x y,
+    sq_hinge_at m y <=
+    sq_hinge_at m x + sq_hinge_deriv m x * (y - x) +
+    1 * ((y - x) * (y - x)).
+Proof.
+  intros m x y.
+  unfold sq_hinge_at, sq_hinge_deriv.
+  pose proof (Rle_0_sqr (y - x)) as Hsq.
+  unfold Rsqr in Hsq.
+  destruct (Rle_or_lt m x) as [Hxge | Hxlt];
+  destruct (Rle_or_lt m y) as [Hyge | Hylt].
+  - rewrite (Rmax_left 0 (m - x)) by lra.
+    rewrite (Rmax_left 0 (m - y)) by lra.
+    cbn. nra.
+  - rewrite (Rmax_left 0 (m - x)) by lra.
+    rewrite (Rmax_right 0 (m - y)) by lra.
+    cbn. nra.
+  - rewrite (Rmax_right 0 (m - x)) by lra.
+    rewrite (Rmax_left 0 (m - y)) by lra.
+    cbn. nra.
+  - rewrite (Rmax_right 0 (m - x)) by lra.
+    rewrite (Rmax_right 0 (m - y)) by lra.
+    cbn. nra.
+Qed.
+
+Lemma sh_quad_upper :
+  forall m x y, length x = 1%nat -> length y = 1%nat ->
+    sh_loss m y <= sh_loss m x + dot (sh_grad m x) (vec_sub y x) +
+                    2 / 2 * dot (vec_sub y x) (vec_sub y x).
+Proof.
+  intros m x y Hx Hy.
+  destruct x as [|xa [|xb rest1]]; cbn in Hx; try discriminate.
+  destruct y as [|ya [|yb rest2]]; cbn in Hy; try discriminate.
+  cbn [sh_loss sh_grad vec_sub dot].
+  rewrite !Rplus_0_r.
+  replace (2 / 2) with 1 by lra.
+  apply sh_quad_upper_scalar.
+Qed.
+
+(** ** PL inequality for the squared hinge with [mu = 2]. *)
+
+Lemma sh_PL_scalar :
+  forall m x, 2 * 2 * sq_hinge_at m x <= sq_hinge_deriv m x * sq_hinge_deriv m x.
+Proof.
+  intros m x. unfold sq_hinge_at, sq_hinge_deriv.
+  set (a := Rmax 0 (m - x)).
+  pose proof (Rmax_l 0 (m - x)) as Ha. fold a in Ha.
+  cbn. nra.
+Qed.
+
+Lemma sh_PL :
+  forall m theta, length theta = 1%nat ->
+    2 * 2 * (sh_loss m theta - 0) <=
+    dot (sh_grad m theta) (sh_grad m theta).
+Proof.
+  intros m theta Hlen.
+  destruct theta as [|x [|y rest]]; cbn in Hlen; try discriminate.
+  cbn [sh_loss sh_grad dot].
+  rewrite Rplus_0_r, Rminus_0_r.
+  apply sh_PL_scalar.
+Qed.
+
+(** ** Concrete geometric convergence for SGD on the scalar squared
+    hinge. The step size [eta] satisfies both the smoothness condition
+    [eta * 2 <= 1] and the PL condition [eta * 2 <= 1] simultaneously;
+    convergence rate is [(1 - 2 * eta)^T]. *)
+
+Theorem squared_hinge_sgd_pl_convergence :
+  forall (m : R) (theta0 : list R) (eta : R) (T : nat),
+    length theta0 = 1%nat ->
+    0 < eta -> eta * 2 <= 1 ->
+    sh_loss m (sgd_iterate_vec (sh_grad m) eta theta0 T) <=
+    (1 - eta * 2) ^ T * sh_loss m theta0.
+Proof.
+  intros m theta0 eta T Hlen Heta_pos HetaLsm.
+  pose proof (@sgd_pl_linear_convergence
+                1%nat (sh_loss m) (sh_grad m) (2%R)
+                (sh_grad_dim m)
+                (sh_quad_upper m)
+                (0%R)
+                (fun theta _ => sh_loss_nonneg m theta)
+                (2%R)
+                (sh_PL m)
+                theta0 eta T Hlen Heta_pos HetaLsm HetaLsm) as Hconv.
+  rewrite !Rminus_0_r in Hconv.
+  exact Hconv.
+Qed.
+
 Local Close Scope R_scope.
