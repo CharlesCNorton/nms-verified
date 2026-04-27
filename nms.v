@@ -11461,6 +11461,149 @@ Proof.
     rewrite Hgoal_pow. apply Rle_refl.
 Qed.
 
+(** ** Constructive encoder for the subnormal range.
+
+    Given [|x| < 2^(-1022)] (subnormal interval), [b64_encode_subnormal
+    sign x] returns the [b64_repr] with exponent field [0] and mantissa
+    [floor(|x| / 2^(-1074))]. Subnormal binary64 values use the formula
+    [value = (-1)^sign * mantissa * 2^(-1074)] without an implicit
+    leading bit (in contrast to normal-range, which uses [(1 + m/2^52) *
+    2^(e-1023)]). The dedicated subnormal decoder
+    [b64_subnormal_to_R] applies this formula. The encoder is
+    well-formed (mantissa in range), and the round-trip error is
+    bounded by [2^(-1074)] (the subnormal ULP). *)
+
+Definition b64_repr_subnormal (r : b64_repr) : Prop :=
+  b64_exponent r = 0%Z /\ INR (b64_mantissa r) <= 2 ^ 52 - 1.
+
+Definition b64_subnormal_to_R (r : b64_repr) : R :=
+  let s := if b64_sign r then -1 else 1 in
+  s * INR (b64_mantissa r) * powerRZ 2 (-1074).
+
+Definition b64_encode_subnormal (sign : bool) (x : R) : b64_repr :=
+  let m_R := Rabs x / powerRZ 2 (-1074) in
+  Build_b64_repr sign 0%Z (Z.to_nat (Z.max 0 (Int_part m_R))).
+
+Lemma b64_encode_subnormal_exponent :
+  forall sign x, b64_exponent (b64_encode_subnormal sign x) = 0%Z.
+Proof. intros. reflexivity. Qed.
+
+Lemma b64_encode_subnormal_sign :
+  forall sign x, b64_sign (b64_encode_subnormal sign x) = sign.
+Proof. intros. reflexivity. Qed.
+
+(** Mantissa bound: when [|x| < 2^(-1022)], the encoded mantissa is at
+    most [2^52 - 1]. Uses the identity [2^(-1022) = 2^52 * 2^(-1074)]. *)
+
+Lemma powerRZ_2_neg1022_eq :
+  powerRZ 2 (-1022) = 2 ^ 52 * powerRZ 2 (-1074).
+Proof.
+  replace (-1022)%Z with (52 + (-1074))%Z by lia.
+  rewrite powerRZ_add by lra.
+  reflexivity.
+Qed.
+
+Lemma b64_encode_subnormal_mantissa_bound :
+  forall sign x,
+    Rabs x < powerRZ 2 (-1022) ->
+    INR (b64_mantissa (b64_encode_subnormal sign x)) <= 2 ^ 52 - 1.
+Proof.
+  intros sign x Hhi. unfold b64_encode_subnormal. simpl.
+  rewrite INR_Z_to_nat_max_0.
+  set (m_R := Rabs x / powerRZ 2 (-1074)).
+  pose proof (powerRZ_2_pos (-1074)) as Hq_pos.
+  pose proof (Rabs_pos x) as Hx_nn.
+  pose proof (base_Int_part m_R) as [Hint_lo Hint_hi].
+  assert (Hpow52_pos : 0 < 2 ^ 52) by (apply pow_lt; lra).
+  rewrite powerRZ_2_neg1022_eq in Hhi.
+  assert (Hm_R_hi : m_R < 2 ^ 52).
+  { unfold m_R. apply Rmult_lt_reg_r with (r := powerRZ 2 (-1074));
+      [exact Hq_pos|].
+    unfold Rdiv. rewrite Rmult_assoc, Rinv_l by lra.
+    rewrite Rmult_1_r. exact Hhi. }
+  assert (Hipart_lt : IZR (Int_part m_R) < 2 ^ 52).
+  { eapply Rle_lt_trans; [exact Hint_lo | exact Hm_R_hi]. }
+  assert (Hpow_int : 2 ^ 52 = IZR (2 ^ 52)%Z).
+  { rewrite pow_IZR. simpl. lra. }
+  assert (Hipart_lt_Z : (Int_part m_R < 2 ^ 52)%Z).
+  { apply lt_IZR. rewrite <- Hpow_int. exact Hipart_lt. }
+  assert (Hmax_le_Z : (Z.max 0 (Int_part m_R) <= 2 ^ 52 - 1)%Z).
+  { apply Z.max_lub; lia. }
+  apply IZR_le in Hmax_le_Z.
+  rewrite minus_IZR in Hmax_le_Z.
+  rewrite <- Hpow_int in Hmax_le_Z.
+  exact Hmax_le_Z.
+Qed.
+
+Theorem b64_encode_subnormal_well_formed :
+  forall sign x,
+    Rabs x < powerRZ 2 (-1022) ->
+    b64_repr_subnormal (b64_encode_subnormal sign x).
+Proof.
+  intros sign x Hhi. split.
+  - rewrite b64_encode_subnormal_exponent. reflexivity.
+  - apply b64_encode_subnormal_mantissa_bound. assumption.
+Qed.
+
+(** Encode-decode round-trip closeness for subnormals: the decoded
+    magnitude is within [2^(-1074)] of [|x|] (one subnormal ULP). *)
+
+Theorem b64_encode_subnormal_decode_close :
+  forall sign x,
+    Rabs x < powerRZ 2 (-1022) ->
+    sign = (if Rlt_dec x 0 then true else false) ->
+    Rabs (b64_subnormal_to_R (b64_encode_subnormal sign x) - x) <=
+      powerRZ 2 (-1074).
+Proof.
+  intros sign x Hhi Hsign.
+  set (q := powerRZ 2 (-1074)).
+  pose proof (powerRZ_2_pos (-1074)) as Hq_pos. fold q in Hq_pos.
+  set (m_R := Rabs x / q).
+  pose proof (Rabs_pos x) as Hx_nn.
+  pose proof (base_Int_part m_R) as [Hint_lo Hint_hi].
+  assert (Hm_R_nn : 0 <= m_R).
+  { unfold m_R, Rdiv. apply Rmult_le_pos;
+      [assumption | left; apply Rinv_0_lt_compat; exact Hq_pos]. }
+  assert (HIntp_gt : -1 < IZR (Int_part m_R)) by lra.
+  assert (HIntp_gt_Z : (-1 < Int_part m_R)%Z).
+  { apply lt_IZR. simpl. lra. }
+  assert (HIntp_lo_Z : (0 <= Int_part m_R)%Z) by lia.
+  assert (Hmax_eq : Z.max 0 (Int_part m_R) = Int_part m_R).
+  { apply Z.max_r. assumption. }
+  unfold b64_subnormal_to_R, b64_encode_subnormal.
+  cbn [b64_sign b64_exponent b64_mantissa].
+  fold q. fold m_R.
+  rewrite Hmax_eq.
+  rewrite INR_IZR_INZ.
+  rewrite Z2Nat.id by exact HIntp_lo_Z.
+  set (s := if sign then -1 else 1).
+  set (decoded := s * IZR (Int_part m_R) * q).
+  assert (Hsx : x = s * Rabs x).
+  { unfold s. subst sign. destruct (Rlt_dec x 0) as [Hxlt | Hxge].
+    - rewrite (Rabs_left _ Hxlt). lra.
+    - assert (0 <= x) by lra. rewrite Rabs_right by lra. lra. }
+  assert (Habs_s : Rabs s = 1).
+  { unfold s. destruct sign.
+    - replace (-1) with (-(1)) by lra. rewrite Rabs_Ropp, Rabs_R1. reflexivity.
+    - apply Rabs_R1. }
+  assert (Hgoal_step :
+    decoded - x = s * (IZR (Int_part m_R) * q - Rabs x)).
+  { unfold decoded. rewrite Hsx at 1. ring. }
+  rewrite Hgoal_step.
+  rewrite Rabs_mult, Habs_s, Rmult_1_l.
+  assert (Hdiff_form :
+    IZR (Int_part m_R) * q - Rabs x =
+    (IZR (Int_part m_R) - m_R) * q).
+  { unfold m_R. field. lra. }
+  rewrite Hdiff_form.
+  rewrite Rabs_mult.
+  rewrite (Rabs_pos_eq q) by lra.
+  assert (Habs_le_1 : Rabs (IZR (Int_part m_R) - m_R) <= 1).
+  { unfold Rabs. destruct (Rcase_abs (IZR (Int_part m_R) - m_R)); lra. }
+  apply Rle_trans with (1 * q); [|lra].
+  apply Rmult_le_compat_r; [lra | exact Habs_le_1].
+Qed.
+
 Local Close Scope R_scope.
 
 (** ** Massart-style uniform deviation bound for finite hypothesis classes.
