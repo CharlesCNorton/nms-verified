@@ -10102,6 +10102,89 @@ End HungarianWitness.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *  Part XXV. Hoeffding-style concentration via assumed MGF bound      *)
+(** ******************************************************************** *)
+
+(** Closes the Hoeffding-bound framework by composing
+    [chernoff_markov_bound] (Part VI's MGF Markov inequality) with an
+    assumed sub-Gaussian MGF bound, yielding the closed-form
+    [exp(-2 t^2 / (b-a)^2)] tail bound after lambda-optimization.
+
+    The MGF bound itself ([Hoeffding's lemma], stating
+    [E[exp(λ(X-μ))] <= exp(λ^2(b-a)^2/8)] for [X in [a,b]] centered)
+    requires convexity of [exp], which in turn requires Taylor's
+    theorem or derivative-based MVT arguments. Stdlib provides
+    [derive_pt_exp] (the derivative of exp is exp) but not the
+    convexity-of-exp lemma directly; building it from the MVT
+    machinery is the analytic completion.
+
+    This part delivers:
+
+      Theorem 1.  hoeffding_chernoff_chain
+                  — [exp(λt) * P(X >= t) <= exp(λ²(b-a)²/8)] given
+                    Hoeffding's lemma as a hypothesis.
+
+      Theorem 2.  hoeffding_optimized_lambda
+                  — algebraic optimization of lambda yields the
+                    closed-form [exp(-2t²/(b-a)²)] bound.
+
+    A complete proof of Hoeffding's lemma from Stdlib primitives is
+    the missing analytic piece; it requires convexity of exp (via
+    second-derivative test or Taylor remainder argument). With the
+    lemma in hand, [hoeffding_optimized_lambda] produces the
+    standard Hoeffding tail bound. *)
+
+Local Open Scope R_scope.
+
+Theorem hoeffding_chernoff_chain :
+  forall (samples : list R) (lambda t a b : R),
+    0 < lambda ->
+    a < b ->
+    mgf_uniform samples lambda <=
+      exp (lambda * lambda * (b - a) * (b - a) / 8) ->
+    exp (lambda * t) *
+      prob_uniform samples (fun x => if Rle_dec t x then true else false)
+    <= exp (lambda * lambda * (b - a) * (b - a) / 8).
+Proof.
+  intros samples lambda t a b Hlam Hab Hmgf.
+  eapply Rle_trans.
+  - apply chernoff_markov_bound. assumption.
+  - assumption.
+Qed.
+
+(** ** Hoeffding tail bound: optimal lambda = 4t/(b-a)^2 yields
+    exp(-2t^2/(b-a)^2). The arithmetic discharge below. *)
+
+Theorem hoeffding_optimized_lambda :
+  forall (samples : list R) (t a b : R),
+    0 < t ->
+    a < b ->
+    mgf_uniform samples (4 * t / ((b - a) * (b - a))) <=
+      exp ((4 * t / ((b - a) * (b - a))) *
+           (4 * t / ((b - a) * (b - a))) * (b - a) * (b - a) / 8) ->
+    prob_uniform samples (fun x => if Rle_dec t x then true else false)
+    <= exp (- 2 * t * t / ((b - a) * (b - a))).
+Proof.
+  intros samples t a b Ht Hab Hmgf.
+  set (lam := 4 * t / ((b - a) * (b - a))).
+  assert (Hlam_pos : 0 < lam).
+  { unfold lam. apply Rmult_lt_0_compat.
+    - lra.
+    - apply Rinv_0_lt_compat. nra. }
+  fold lam in Hmgf.
+  pose proof (hoeffding_chernoff_chain samples t Hlam_pos Hab Hmgf) as Hchain.
+  apply Rmult_le_reg_l with (r := exp (lam * t)).
+  { apply exp_pos. }
+  eapply Rle_trans; [exact Hchain|].
+  rewrite <- exp_plus.
+  apply Req_le. f_equal.
+  unfold lam.
+  field. lra.
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
