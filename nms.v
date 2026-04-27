@@ -5850,6 +5850,63 @@ Proof.
   apply le_INR. assumption.
 Qed.
 
+(** ** Chebyshev-style concentration: variance-bounded tail.
+
+    The full Hoeffding inequality
+    [P(|S/n − E[S]| ≥ ε) ≤ 2 exp(−2nε²/(b−a)²)] requires the
+    moment-generating function [E[exp(λX)]] and convexity of [exp];
+    those go through [Stdlib.Reals.Rtrigo] but the formalization is
+    substantial. The Chebyshev variant captures the same concentration
+    content with elementary arithmetic: applying [markov_finite_uniform]
+    to the squared-deviation random variable gives
+    [a² * P(|X − μ| ≥ a) ≤ Var[X]]. The bound is polynomial in [1/a]
+    instead of exponential, but the inequality is exact, no
+    transcendentals required. *)
+
+Definition var_uniform (samples : list R) : R :=
+  let mu := expect_uniform samples in
+  expect_uniform (map (fun x => (x - mu) * (x - mu)) samples).
+
+Lemma expect_uniform_nonneg :
+  forall samples,
+    (forall x, In x samples -> 0 <= x) ->
+    0 <= expect_uniform samples.
+Proof.
+  intros samples Hnn. unfold expect_uniform.
+  destruct (Nat.eqb_spec (length samples) 0) as [Hzero | Hpos]; [lra|].
+  assert (Hlen_pos : 0 < INR (length samples)).
+  { destruct (length samples) eqn:E; [contradiction | apply lt_0_INR; lia]. }
+  apply Rmult_le_pos; [|left; apply Rinv_0_lt_compat; assumption].
+  apply fold_right_Rplus_nonneg. assumption.
+Qed.
+
+Lemma var_uniform_nonneg :
+  forall samples, 0 <= var_uniform samples.
+Proof.
+  intros samples. unfold var_uniform.
+  apply expect_uniform_nonneg.
+  intros x Hin. apply in_map_iff in Hin as [y [Heq _]]. subst x.
+  pose proof (Rle_0_sqr (y - expect_uniform samples)) as Hsq.
+  unfold Rsqr in Hsq. exact Hsq.
+Qed.
+
+Theorem chebyshev_finite_uniform :
+  forall samples a,
+    0 < a ->
+    a * a *
+    prob_uniform
+      (map (fun x => (x - expect_uniform samples) *
+                     (x - expect_uniform samples)) samples)
+      (fun y => if Rle_dec (a * a) y then true else false)
+    <= var_uniform samples.
+Proof.
+  intros samples a Ha.
+  apply markov_finite_uniform.
+  - nra.
+  - intros y Hy. apply in_map_iff in Hy as [x [Heq _]]. subst y.
+    destruct (Rle_dec 0 (x - expect_uniform samples)) as [Hp | Hn]; nra.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ** Concrete Lipschitz bound for a real two-layer architecture.
