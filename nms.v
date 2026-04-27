@@ -5312,6 +5312,32 @@ Section FloatingPointQuantization.
 
 End FloatingPointQuantization.
 
+(** ** Concrete fixed-precision quantizer.
+
+    Instantiates the abstract [FloatingPointQuantization] section with
+    a concrete operator: round-to-nearest-integer via [Int_part]. The
+    bounded-error claim [|q(x) − x| ≤ 1/2] follows directly from
+    Stdlib's [base_Int_part] integer-part bound. Composing with
+    [quantize_lipschitz_compose] gives an explicit [2 * (1/2) = 1]
+    additive slack on Lipschitz bounds when the score is rounded to
+    the nearest integer.
+
+    Higher-precision binary64-style quantizers (with 2^{-53} mantissa
+    error) take the same shape — replace [/ 2] with [/ 2 ^ 53]. The
+    full IEEE 754 normal-range model with subnormal handling is the
+    natural extension; this is the constructive starting point. *)
+
+Definition quantize_unit (x : R) : R := IZR (Int_part (x + /2)).
+
+Theorem quantize_unit_bounded_error :
+  forall x, (Rabs (quantize_unit x - x) <= /2)%R.
+Proof.
+  intros x. unfold quantize_unit.
+  pose proof (base_Int_part (x + /2)) as [Hlo Hhi].
+  set (n := IZR (Int_part (x + /2))) in *.
+  unfold Rabs. destruct (Rcase_abs (n - x)) as [Hlt | Hge]; lra.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ** Real-valued loss [L_separated] with zero-locus equivalence.
