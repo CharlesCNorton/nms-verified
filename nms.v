@@ -3136,12 +3136,6 @@ Qed.
 From Stdlib Require Import Extraction.
 Extraction Language OCaml.
 Set Extraction Optimize.
-(* [Set Extraction AccessOpaque] permits extraction to traverse [Qed]-opaque
-   proof terms when needed for compilation. The certifier extraction at the
-   end of this file uses this for [Separated_dec], whose computational
-   content lives inside an opaque correctness proof. The extracted OCaml
-   matches the algorithmic intent; readers should be aware that [.ml]
-   output is extraction-with-opaque-bodies, not pure code extraction. *)
 Set Extraction AccessOpaque.
 
 Extract Inductive bool => "bool" [ "true" "false" ].
@@ -4966,22 +4960,11 @@ Qed.
     [nms_collapse_onepeak] yields NMS-collapse with no further hypothesis
     discharge.
 
-    Theorems delivered here:
-
-      Theorem 1.  sep_respecting_implies_separated
-      Theorem 2.  sep_respecting_implies_collapse
-      Theorem 3.  c40_separated, c40_collapse  (worked instance,
-                                                vm-checkable)
-      Theorem 4.  sep_certify_finite_*         (decidable certificate
-                                                search over a finite
-                                                candidate set)
-
     The continuous-optimisation completion — that SGD on
     [L_focal + lambda * L_separated] converges to a [SepRespectingHead]
     inhabitant with explicit sample complexity — needs Rademacher
     complexity and stochastic-optimisation convergence, neither of
-    which is in Stdlib. Theorem 4 is the constructive surrogate
-    executable in Stdlib alone: the finite-search version is
+    which is in Stdlib. The finite-search version is
     decidable here; the continuous version is the missing library. *)
 
 Record SepRespectingHead (Feat : Type) := mkSepHead {
@@ -6613,17 +6596,6 @@ End SepFiniteCertify.
     [train -> train_head_apply -> sep_respecting_implies_collapse]
     closes without external libraries.
 
-    Theorems delivered here:
-
-      Theorem 5.  train_separated              (trained list is
-                                                unconditionally Separated)
-      Theorem 6.  train_head_apply             (bridge precondition holds
-                                                by construction)
-      Theorem 7.  train_head_yields_collapse   (composition with keystone)
-      Theorem 8.  train_collapse               (end-to-end: NoDup +
-                                                sorted_desc D -> NMS is
-                                                identity on trained_list D)
-
     What this delivers operationally: at training time, run [nms_sorted]
     once; at deployment, the score head's output on the trained list is
     provably equivalent to the threshold filter without NMS. The
@@ -7108,18 +7080,7 @@ Qed.
     the local Lipschitz constant is zero, while the global product
     bound is six.
 
-    Theorems delivered here:
-
-      Theorem 1.  global_implies_interval_lipschitz   (loose case)
-      Theorem 2.  interval_lipschitz_monotone         (looser is fine)
-      Theorem 3.  mat_vec_interval_lipschitz          (linear layer)
-      Theorem 4.  relu_interval_lipschitz             (ReLU global)
-      Theorem 5.  relu_interval_lipschitz_dead        (ReLU on dead box)
-      Theorem 6.  interval_lipschitz_compose          (chain rule)
-      Theorem 7.  multilayer_interval_lipschitz_global (recovers Part I)
-      Theorem 8.  ibp_dead_local_zero                  (worked example:
-                                                       local L = 0,
-                                                       global L = 6) *)
+*)
 
 Local Open Scope R_scope.
 Local Unset Implicit Arguments.
@@ -7521,12 +7482,7 @@ Local Close Scope R_scope.
         => detr_equilibrium_threshold_vacuous (the bridge's threshold)
         => detr_equilibrium_yields_separated  (full bridge composition)
 
-    Theorems delivered:
-
-      Theorem 1.  detr_equilibrium_margin_vacuous
-      Theorem 2.  detr_equilibrium_threshold_vacuous
-      Theorem 3.  detr_equilibrium_yields_separated
-                  — full composition: equilibrium ⟹ Separated *)
+*)
 
 Section DETREquilibriumMargin.
 
@@ -7648,11 +7604,7 @@ End DETREquilibriumMargin.
           [vm_compute] and [Separated] follows via
           [Separated_check_correct].
 
-    Theorems delivered:
-
-      Theorem 1.  e20_apply_layer_local_lipschitz   (IBP via Part VII)
-      Theorem 2.  e20_separated_check_true          (vm_compute)
-      Theorem 3.  e20_separated_at_slack_one        (lift to Separated) *)
+*)
 
 (** ** Concrete 1-layer ReLU network with IBP-derived L. *)
 
@@ -7758,10 +7710,7 @@ Qed.
     layers' quantization errors is captured exactly by the suffix
     products in [chain_quant_slack].
 
-    Theorems delivered:
-
-      Theorem 1.  quant_lipschitz_step          (single-layer error)
-      Theorem 2.  apply_quant_chain_lipschitz   (N-layer end-to-end) *)
+*)
 
 Local Open Scope R_scope.
 
@@ -7903,16 +7852,7 @@ Local Close Scope R_scope.
     Separated locus) requires convexity, which is item 3 of
     remaining work.
 
-    Theorem delivered:
-
-      Theorem 1.  sgd_on_nonneg_smooth_loss_stationary
-                  — SGD on any non-negative smooth loss yields
-                    cumulative grad-norm-squared bounded above by
-                    [2 * loss(θ_0) / η]. Instantiated on
-                    L_separated_sq with [f_lower = 0], this is
-                    the unconditional half of the SGD-on-L_separated_sq
-                    training procedure; the convex-convergence half
-                    awaits item 3. *)
+*)
 
 Local Open Scope R_scope.
 
@@ -8036,10 +7976,7 @@ Local Close Scope R_scope.
     L_separated_zero_iff_separated, lifted as item 2 of remaining
     work).
 
-    Theorems delivered:
-
-      Theorem 1.  sgd_pl_one_step           (single-step contraction)
-      Theorem 2.  sgd_pl_linear_convergence (T-step geometric rate) *)
+*)
 
 Local Open Scope R_scope.
 
@@ -8135,11 +8072,7 @@ Local Close Scope R_scope.
     pair_violation_sq vs pair_violation, the lifted equivalence
     follows by routine flat_map / map manipulation.
 
-    Theorems delivered:
-
-      Theorem 1.  L_separated_sq_zero_iff_L_separated_zero
-      Theorem 2.  L_separated_sq_zero_iff_separated_general
-                  — full chain L_separated_sq = 0 <-> Separated *)
+*)
 
 Local Open Scope R_scope.
 
@@ -8218,10 +8151,7 @@ Local Close Scope R_scope.
     per-triple Separated-1 condition feeds the predicate
     conclusions.
 
-    Theorems delivered:
-
-      Theorem 1.  mc_pair_violation_zero_separation
-      Theorem 2.  L_mc_separated_zero_implies_invariants *)
+*)
 
 Local Open Scope R_scope.
 
@@ -8427,11 +8357,7 @@ Local Close Scope R_scope.
     matching. The Hungarian algorithm is the polynomial-time
     constructor; the existence theorem is its abstract guarantee.
 
-    Theorems delivered:
-
-      Theorem 1.  fold_right_Rmax_witness   (max element in list)
-      Theorem 2.  exists_max_weight_matching (max-weight in
-                                              candidate list) *)
+*)
 
 Local Open Scope R_scope.
 
@@ -8525,13 +8451,7 @@ Local Close Scope R_scope.
     special-value option type are the remaining pieces of full IEEE
     754 — significant additional work each.
 
-    Theorems delivered:
-
-      Theorem 1.  fp_quantize_bounded_error
-                  — absolute error [<= q/2] for any precision [q]
-      Theorem 2.  b64_quantize_bounded_error
-                  — instantiation at the binary64 mantissa scale
-                    [2^{-52}], absolute error [<= 2^{-53}] *)
+*)
 
 Record b64_repr : Type := {
   b64_sign     : bool;     (* 1 bit:   true = negative, false = non-negative *)
@@ -8588,37 +8508,6 @@ Local Close Scope R_scope.
 (** *  Part XVIII. IEEE 754 binary64 normal-range relative error          *)
 (** ******************************************************************** *)
 
-(** Closes [todo.md] item 1's relative-error gap.
-    [fp_quantize_bounded_error] (Part XVII) gives absolute error [q/2]
-    for any fixed precision [q]. The IEEE 754 normal-range relative-error
-    bound
-
-      |round(x) - x| <= 2^{-53} * |x|
-
-    follows by selecting [q] proportionally to [|x|]: for [x] in the
-    binade [2^e, 2^{e+1})], the unit in last place is [2^{e-52}], so
-    round-to-nearest has absolute error at most [2^{e-53}], which is
-    at most [2^{-53} * |x|] since [|x| >= 2^e]. The exponent-adaptive
-    quantizer [b64_normal_quantize e x] selects this [q] from the
-    binade exponent witness [e] and inherits the relative bound.
-
-    Stdlib's [powerRZ] extends [pow] to integer exponents, covering
-    the full IEEE 754 normal range [|x| in [2^{-1022}, 2^{1024}]];
-    the proof is uniform over [e : Z]. The bracket lower-bound
-    [2^e <= |x|] is the only hypothesis: [b64_normal_quantize] with
-    any such [e] satisfies the relative bound, with [e] chosen as the
-    binade exponent (i.e., the largest [e] with [2^e <= |x|]) for
-    minimum absolute error.
-
-    Theorems delivered:
-
-      Theorem 1. fp_quantize_pow_relative_error
-                 — relative-error bound from a binade lower-bound
-                   witness [2^e <= |x|] and matching precision
-                   [q = 2^(e-52)].
-
-      Theorem 2. b64_normal_quantize_relative_error
-                 — wrapper at the binary64 mantissa scale. *)
 
 Local Open Scope R_scope.
 
@@ -8673,34 +8562,6 @@ Local Close Scope R_scope.
 (** *  Part XIX. Brute-force constructive optimal matching                *)
 (** ******************************************************************** *)
 
-(** Closes [todo.md] item 2's gap with a constructive — though
-    exponential-time — optimal matcher. [exists_max_weight_matching]
-    (Part XVI) proves the abstract existence of a max-weight matching
-    in any non-empty candidate list. The polynomial-time Hungarian
-    algorithm is one instantiation; this part delivers a different one:
-    brute-force enumeration of every permutation of the ground-truth
-    list, paired in input order with the predicted boxes. The output
-    is provably optimal among all matchings of [boxes] obtained by
-    reordering [gts].
-
-    Cost: O(n!) for [n = |gts|]. Suitable for small instances (DETR
-    query slot counts of order 10-20) where polynomial-time Hungarian
-    is overkill but optimality matters. The asymptotically efficient
-    [O(n^3)] Hungarian construction with potentials and augmenting
-    paths remains a future-work direction.
-
-    Theorems delivered:
-
-      Theorem 1.  permutation_in_perms
-                  — every [Permutation] of [l] is in [perms l].
-      Theorem 2.  brute_match_in_enumeration
-                  — output is one of the enumerated matchings.
-      Theorem 3.  brute_match_optimal_in_enumeration
-                  — output has max weight among the enumeration.
-      Theorem 4.  brute_match_optimal_among_perms
-                  — for any permutation [perm] of [gts], the matching
-                    [matching_from_perm boxes perm] is dominated by
-                    [brute_match boxes gts]. *)
 
 Local Open Scope R_scope.
 
@@ -8916,27 +8777,6 @@ Local Close Scope R_scope.
 (** *  Part XX. Geometric saturating tightness witness                    *)
 (** ******************************************************************** *)
 
-(** Part II's [build_tight n] saturates [nms_quantitative_bound] using
-    the constant-IoU witness [triv_iou _ _ := 100]. While valid as a
-    saturation proof, the constant IoU is not realised by any
-    geometric structure. This part delivers a geometric saturating
-    witness using [heatmap_iou]: [n] pixel detections at positions
-    [(0, 0), (0, 1), ..., (0, n-1)] with descending scores [n, n-1,
-    ..., 1] all lie within Chebyshev radius [n] of each other, so
-    [heatmap_iou n] returns [1] between every pair. The same
-    parametric tightness relation as [tightness_parametric] holds —
-    quantitative bound saturated under genuine geometric IoU.
-
-    Theorems delivered:
-
-      Theorem 1.  geom_tight_NoDup
-      Theorem 2.  geom_tight_sorted_desc
-      Theorem 3.  geom_tight_no_tie_clash
-      Theorem 4.  geom_tight_pairs_high_iou
-                  — every pair has [heatmap_iou n = 1].
-      Theorem 5.  geom_tight_quantitative_saturation
-                  — geometric instance saturates
-                    [nms_quantitative_bound] at equality. *)
 
 Definition geom_tight (n : nat) : list (@det pixel) :=
   map (fun k : nat => mkDet (n - k) (0%nat, k)) (seq 0 n).
@@ -9205,43 +9045,6 @@ Qed.
 (** *           values                                                    *)
 (** ******************************************************************** *)
 
-(** Closes [todo.md] item 1's remaining sub-pieces:
-
-      (a) round-to-nearest-even tie-breaking
-      (c) subnormal range with absolute error 2^{-1075}
-      (d) special-value option type with NaN / +inf / -inf propagation
-
-    Part XVIII already closed sub-piece (b) — the relative-error scaling
-    on the normal range. The remaining pieces are delivered here.
-
-    [round_half_even x] returns the nearest integer to [x], breaking
-    exact midpoints to the even integer. The absolute-error bound
-    [|round x - x| <= /2] holds unconditionally; at exact midpoints,
-    the result has even parity (LSB = 0).
-
-    [b64_subnormal_quantize] is the fixed-precision quantizer at the
-    smallest binary64 step [2^{-1074}], inheriting absolute-error
-    bound [<= 2^{-1075}] from [fp_quantize_bounded_error].
-
-    [b64_value : Type] models the four classes of binary64 values:
-    finite (normal or subnormal) reals [b64_v r], [+inf], [-inf], and
-    [NaN]. [b64_add], [b64_sub], [b64_mul], [b64_neg], and the
-    comparison [b64_lt] propagate by IEEE 754 rules: NaN dominates;
-    [+inf + -inf] and [0 * inf] yield NaN; [b64_lt] is always false on
-    NaN inputs.
-
-    Theorems delivered:
-
-      Theorem 1.  round_half_even_bounded
-                  — |IZR (round_half_even x) - x| <= /2 unconditionally.
-      Theorem 2.  round_half_even_midpoint_even
-                  — at midpoints, the result has even parity.
-      Theorem 3.  fp_quantize_rne_bounded_error
-                  — round-to-nearest-even quantizer at precision q.
-      Theorem 4.  b64_subnormal_bounded_error
-                  — subnormal-range absolute-error bound.
-      Theorem 5+.  b64_add_*, b64_mul_*, b64_lt_*
-                  — IEEE 754 propagation rules. *)
 
 Local Open Scope R_scope.
 
@@ -9522,53 +9325,6 @@ Proof. destruct a; intros H1 H2; [reflexivity | exfalso; apply H2; reflexivity |
 (** *  Part XXII. Optimal matching via dynamic programming                *)
 (** ******************************************************************** *)
 
-(** Closes [todo.md] item 1's remaining gap with the standard
-    bipartite-assignment DP recurrence and a rigorous correctness
-    reduction to [brute_match]:
-
-      dp_max_match (b :: rest) gts =
-        max over g in gts of
-          (cost b g + dp_max_match rest (dp_remove_first g gts))
-
-    This is the canonical Hungarian-style DP. Standard memoization
-    (an extraction-time optimization) takes the runtime to
-    [O(2^n * n^2)]; without explicit caching, Coq's reduction matches
-    [brute_match]'s [O(n!)]. The strict-polynomial [O(n^3)] Hungarian
-    variant with potentials and augmenting paths remains genuine
-    future work — its correctness proof requires LP duality on the
-    assignment polytope (or a Berge's-theorem formalization on the
-    equality subgraph), neither of which Stdlib provides. The DP
-    delivered here closes the optimality side at the recurrence level,
-    parametrically without LP duality.
-
-    The equivalence proof goes via two inequalities:
-
-      (1) for any permutation [perm] of [gts], the matching weight
-          [matching_weight (matching_from_perm boxes perm)] is at
-          most [dp_max_match boxes gts];
-
-      (2) some perm-derived matching achieves [dp_max_match boxes
-          gts]'s value.
-
-    Composing (1) and (2) with [brute_match]'s optimality on the
-    same enumeration yields [dp_max_match boxes gts =
-    matching_weight cost (brute_match cost boxes gts)] — the
-    headline equivalence.
-
-    Theorems delivered:
-
-      Theorem 1.  in_perms_permutation
-                  — soundness of perm enumeration: every enumerated
-                    list is a permutation.
-      Theorem 2.  dp_remove_first_perm
-                  — [Permutation l (g :: dp_remove_first g l)] when
-                    [g in l].
-      Theorem 3.  dp_max_match_ge_perm
-                  — dp dominates any perm-derived matching weight.
-      Theorem 4.  dp_max_match_le_some_perm
-                  — some perm-derived matching achieves dp's value.
-      Theorem 5.  dp_max_match_eq_brute_weight
-                  — dp = matching_weight cost (brute_match cost ...). *)
 
 Local Open Scope R_scope.
 
@@ -9886,34 +9642,6 @@ Local Close Scope R_scope.
 (** *  Part XXIII. LP duality for balanced bipartite assignment           *)
 (** ******************************************************************** *)
 
-(** Closes the LP-duality blocker that gates strict-polynomial-time
-    Hungarian. The classical assignment-LP duality says that a perfect
-    matching [M] is optimal whenever there exist potentials [u : Box -> R]
-    and [v : GT -> R] such that
-
-      (a) dual feasibility:           u_b + v_g >= cost b g  for all b, g
-      (b) complementary slackness:    u_b + v_g = cost b g   for all (b,g) in M
-
-    Given these, [M] dominates every perfect matching by the elementary
-    sum-of-potentials argument:
-
-      weight(M)  = sum_{(b,g) in M} cost b g
-                 = sum_{(b,g) in M} (u_b + v_g)              (by (b))
-                 = sum_b u_b + sum_g v_g                      (M is perfect)
-
-      weight(M') <= sum_{(b,g) in M'} (u_b + v_g)            (by (a))
-                 = sum_b u_b + sum_g v_g                      (M' is perfect)
-
-    No LP-polytope vertex theory, no unimodularity, no Berge's theorem
-    on the equality subgraph — just elementary sum manipulation under
-    a perfect-matching hypothesis encoded as Permutations.
-
-    Theorems delivered:
-
-      Theorem 1.  hungarian_optimal_via_duality
-                  — perfect matching M with dual-feasible /
-                    complementary-slack (u, v) is optimal among
-                    perfect matchings. *)
 
 Local Open Scope R_scope.
 
@@ -10032,30 +9760,6 @@ Local Close Scope R_scope.
 (** *  Part XXIV. Hungarian-output witness predicate                      *)
 (** ******************************************************************** *)
 
-(** Practical API for using Part XXIII's LP-duality theorem. Packages
-    the four duality conditions (perfect matching, dual feasibility,
-    complementary slackness) into a single predicate
-    [is_hungarian_witness], then provides the corollary
-    [hungarian_witness_optimal] that consumers call directly to
-    derive optimality of any matching for which dual variables can be
-    exhibited.
-
-    For an O(n^3) Hungarian implementation, this is the contract: at
-    termination, produce (M, u, v) for which [is_hungarian_witness]
-    holds, then apply [hungarian_witness_optimal]. The structural
-    invariant is exactly what Hungarian's potentials/alternating
-    trees/augmenting paths machinery maintains throughout iteration —
-    no LP-polytope theory needed beyond Part XXIII.
-
-    Theorems delivered:
-
-      Theorem 1.  hungarian_witness_optimal
-                  — output of any algorithm satisfying the duality
-                    witness predicate is optimal among perfect
-                    matchings.
-      Theorem 2.  hungarian_witness_unique_value
-                  — two witnesses on the same input yield matchings
-                    of equal weight (corollary of 1). *)
 
 Local Open Scope R_scope.
 
@@ -10106,34 +9810,6 @@ Local Close Scope R_scope.
 (** *  Part XXV. Hoeffding-style concentration via assumed MGF bound      *)
 (** ******************************************************************** *)
 
-(** Closes the Hoeffding-bound framework by composing
-    [chernoff_markov_bound] (Part VI's MGF Markov inequality) with an
-    assumed sub-Gaussian MGF bound, yielding the closed-form
-    [exp(-2 t^2 / (b-a)^2)] tail bound after lambda-optimization.
-
-    The MGF bound itself ([Hoeffding's lemma], stating
-    [E[exp(λ(X-μ))] <= exp(λ^2(b-a)^2/8)] for [X in [a,b]] centered)
-    requires convexity of [exp], which in turn requires Taylor's
-    theorem or derivative-based MVT arguments. Stdlib provides
-    [derive_pt_exp] (the derivative of exp is exp) but not the
-    convexity-of-exp lemma directly; building it from the MVT
-    machinery is the analytic completion.
-
-    This part delivers:
-
-      Theorem 1.  hoeffding_chernoff_chain
-                  — [exp(λt) * P(X >= t) <= exp(λ²(b-a)²/8)] given
-                    Hoeffding's lemma as a hypothesis.
-
-      Theorem 2.  hoeffding_optimized_lambda
-                  — algebraic optimization of lambda yields the
-                    closed-form [exp(-2t²/(b-a)²)] bound.
-
-    A complete proof of Hoeffding's lemma from Stdlib primitives is
-    the missing analytic piece; it requires convexity of exp (via
-    second-derivative test or Taylor remainder argument). With the
-    lemma in hand, [hoeffding_optimized_lambda] produces the
-    standard Hoeffding tail bound. *)
 
 Local Open Scope R_scope.
 
@@ -10188,23 +9864,6 @@ Local Close Scope R_scope.
 (** ******************************************************************** *)
 (** *  Part XXVI. Convexity of exp                                        *)
 (** ******************************************************************** *)
-
-(** Convexity of [exp] derived from MVT. Closes the analytic prerequisite
-    for Hoeffding's lemma. The proof goes through two MVT applications
-    on disjoint sub-intervals, deriving strict secant-slope monotonicity
-    [(exp y - exp x)/(y - x) < (exp z - exp y)/(z - y)] for [x < y < z],
-    which in turn implies the convexity inequality
-    [exp(λx + (1-λ)y) <= λ exp x + (1-λ) exp y] by elementary algebra.
-
-    Theorems delivered:
-
-      Theorem 1.  exp_MVT
-                  — Mean Value Theorem instantiated at [exp].
-      Theorem 2.  exp_secant_increasing
-                  — secant slopes of exp are strictly increasing on
-                    nested subintervals.
-      Theorem 3.  exp_convex
-                  — convexity inequality for exp on any interval. *)
 
 Local Open Scope R_scope.
 
@@ -10303,30 +9962,6 @@ Local Close Scope R_scope.
 (** *  Part XXVII. Convexity-based MGF bound for bounded samples         *)
 (** ******************************************************************** *)
 
-(** Direct application of Part XXVI's [exp_convex] to the empirical
-    moment-generating function over a list with values in [a, b]:
-
-      mgf_uniform samples lam <=
-        ((b - mean) / (b - a)) * exp(lam * a)
-      + ((mean - a) / (b - a)) * exp(lam * b)
-
-    where [mean = expect_uniform samples]. For [mean = 0] (centered
-    samples), the bound becomes
-    [(b/(b-a)) exp(lam*a) + (-a/(b-a)) exp(lam*b)].
-
-    This is the convexity step of Hoeffding's lemma; the analytic
-    completion (bounding the RHS by [exp(lam^2 (b-a)^2 / 8)]) requires
-    Taylor's theorem with Lagrange remainder, derivable from Rolle but
-    not provided here. The convexity step is the substantive content;
-    the closed-form Gaussian bound is a tightening.
-
-    Theorem delivered:
-
-      Theorem 1.  exp_convex_at_x — pointwise convexity bound for
-                  [exp(lam*x)] on [a, b].
-      Theorem 2.  mgf_uniform_convexity_bound — empirical-MGF bound
-                  via convexity. *)
-
 Local Open Scope R_scope.
 
 Theorem exp_convex_at_x :
@@ -10381,6 +10016,31 @@ Proof.
     eapply Rle_trans.
     + apply Rplus_le_compat; [exact Hcvx | exact IH].
     + apply Req_le. field. lra.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ******************************************************************** *)
+(** *  Part XXVIII. Hoeffding-style bounds for symmetric centered samples *)
+(** ******************************************************************** *)
+
+Local Open Scope R_scope.
+
+Theorem mgf_symmetric_centered_bound :
+  forall (samples : list R) (lam h : R),
+    0 < h ->
+    fold_right Rplus 0 samples = 0 ->
+    (forall x, In x samples -> -h <= x <= h) ->
+    fold_right Rplus 0 (map (fun x => exp (lam * x)) samples) <=
+    (INR (length samples)) * (exp (lam * h) + exp (lam * (- h))) / 2.
+Proof.
+  intros samples lam h Hh Hcent Hbnd.
+  pose proof (@mgf_sum_convexity_bound samples lam (-h) h
+                ltac:(lra) Hbnd) as Hsum.
+  rewrite Hcent in Hsum.
+  eapply Rle_trans; [exact Hsum|].
+  apply Req_le.
+  field. lra.
 Qed.
 
 Local Close Scope R_scope.
