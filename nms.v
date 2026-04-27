@@ -5547,6 +5547,113 @@ Proof.
     apply pair_violation_nonneg.
 Qed.
 
+(** ** General-margin zero-locus for [L_separated].
+
+    The previous [L_separated_zero_iff_separated] is fixed at margin
+    [m = 1] and slack [k = 1]. The generalisation: for any nat slack
+    [k >= 1], the loss at real margin [INR k] vanishes iff
+    [Separated iou tau theta k] holds. The proof mirrors the [k = 1]
+    case with constants generalised. The unit-margin theorem becomes
+    the [k = 1] specialisation of this. *)
+
+Theorem L_separated_zero_iff_separated_general :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (D : list (@det Box)) (k : nat),
+    (1 <= k)%nat -> (k <= theta)%nat ->
+    (L_separated iou tau theta box_eq_dec_l (INR k) D = 0)%R <->
+    Separated iou tau theta k D.
+Proof.
+  intros Box iou tau theta box_eq_dec_l D k Hk_pos Hk_le_theta.
+  unfold L_separated.
+  rewrite fold_right_Rplus_zero_iff.
+  - split.
+    + intros Hall d d' Hin_d Hin_d' Hne Hiou.
+      assert (Hpv : pair_violation iou tau theta box_eq_dec_l (INR k) d d'
+                    = 0%R).
+      { apply Hall. apply in_flat_map. exists d. split; [assumption|].
+        apply in_map_iff. exists d'. split; [reflexivity|assumption]. }
+      unfold pair_violation in Hpv.
+      destruct (det_eq_dec box_eq_dec_l d d') as [Heq | _]; [contradiction|].
+      apply Nat.leb_le in Hiou as Hle. rewrite Hle in Hpv.
+      set (s := INR (score d)) in *.
+      set (s' := INR (score d')) in *.
+      set (lower := Rmin s s') in *.
+      set (upper := Rmax s s') in *.
+      assert (Hgap : (Rmax 0 (INR k - (upper - lower)) = 0)%R /\
+                    (Rmax 0 (lower - INR theta + 1) = 0)%R).
+      { pose proof (Rmax_l 0 (INR k - (upper - lower))%R) as H1.
+        pose proof (Rmax_l 0 (lower - INR theta + 1)%R) as H2.
+        split; lra. }
+      destruct Hgap as [Hg1 Hg2].
+      assert (Hk_R_pos : (0 < INR k)%R) by (apply lt_0_INR; lia).
+      assert (Hg1' : (upper - lower >= INR k)%R).
+      { destruct (Rle_dec 0 (INR k - (upper - lower))%R) as [Hle' | Hgt'].
+        - rewrite (Rmax_right _ _ Hle') in Hg1. lra.
+        - lra. }
+      assert (Hg2' : (lower < INR theta)%R).
+      { destruct (Rle_dec 0 (lower - INR theta + 1)%R) as [Hle' | Hgt'].
+        - rewrite (Rmax_right _ _ Hle') in Hg2. lra.
+        - lra. }
+      destruct (Rle_lt_dec s s') as [Hss | Hss].
+      * left.
+        assert (Hlow : lower = s) by (apply Rmin_left; assumption).
+        assert (Hup : upper = s') by (apply Rmax_right; assumption).
+        rewrite Hlow in Hg2'. rewrite Hlow, Hup in Hg1'.
+        unfold s, s' in *.
+        split.
+        -- apply INR_le. rewrite plus_INR. lra.
+        -- apply INR_lt. lra.
+      * right.
+        assert (Hlow : lower = s') by (apply Rmin_right; lra).
+        assert (Hup : upper = s) by (apply Rmax_left; lra).
+        rewrite Hlow in Hg2'. rewrite Hlow, Hup in Hg1'.
+        unfold s, s' in *.
+        split.
+        -- apply INR_le. rewrite plus_INR. lra.
+        -- apply INR_lt. lra.
+    + intros Hsep x Hx.
+      apply in_flat_map in Hx as [d [Hd Hd_in]].
+      apply in_map_iff in Hd_in as [d' [Heq Hd'_in]]. subst x.
+      unfold pair_violation.
+      destruct (det_eq_dec box_eq_dec_l d d') as [Heq | Hne]; [reflexivity|].
+      destruct (Nat.leb tau (iou (box d) (box d'))) eqn:Eiou; [|reflexivity].
+      apply Nat.leb_le in Eiou.
+      specialize (Hsep d d' Hd Hd'_in Hne Eiou).
+      set (s := INR (score d)) in *.
+      set (s' := INR (score d')) in *.
+      set (lower := Rmin s s') in *.
+      set (upper := Rmax s s') in *.
+      destruct Hsep as [[Hgap Hth] | [Hgap Hth]].
+      * assert (Hss : (s <= s')%R) by (apply le_INR; lia).
+        assert (Hgap_R : (s' >= s + INR k)%R).
+        { unfold s, s'. rewrite <- (plus_INR (score d) k).
+          apply Rle_ge, le_INR. lia. }
+        assert (Hlow : lower = s) by (apply Rmin_left; assumption).
+        assert (Hup : upper = s') by (apply Rmax_right; assumption).
+        rewrite Hlow, Hup.
+        rewrite (Rmax_left 0 (INR k - (s' - s)))%R by lra.
+        rewrite (Rmax_left 0 (s - INR theta + 1))%R by
+          (assert (s + 1 <= INR theta)%R by
+             (unfold s; rewrite <- (S_INR (score d)); apply le_INR; lia); lra).
+        lra.
+      * assert (Hss : (s' <= s)%R) by (apply le_INR; lia).
+        assert (Hgap_R : (s >= s' + INR k)%R).
+        { unfold s, s'. rewrite <- (plus_INR (score d') k).
+          apply Rle_ge, le_INR. lia. }
+        assert (Hlow : lower = s') by (apply Rmin_right; assumption).
+        assert (Hup : upper = s) by (apply Rmax_left; assumption).
+        rewrite Hlow, Hup.
+        rewrite (Rmax_left 0 (INR k - (s - s')))%R by lra.
+        rewrite (Rmax_left 0 (s' - INR theta + 1))%R by
+          (assert (s' + 1 <= INR theta)%R by
+             (unfold s'; rewrite <- (S_INR (score d')); apply le_INR; lia); lra).
+        lra.
+  - intros x Hx. apply in_flat_map in Hx as [d [_ Hd]].
+    apply in_map_iff in Hd as [d' [Heq _]]. subst x.
+    apply pair_violation_nonneg.
+Qed.
+
 (** ** Smooth (squared-hinge) surrogate for [L_separated].
 
     The L1-hinge [L_separated] has a kink at the margin boundary,
