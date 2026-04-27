@@ -5534,6 +5534,199 @@ Section SGDDescent.
 
 End SGDDescent.
 
+(** ** Multi-dimensional SGD on [R^n] parameter spaces.
+
+    The single-parameter [SGDDescent] generalizes to vector-valued
+    parameters. The descent inequality lifts: with the vector
+    quadratic upper bound
+    [f y <= f x + <grad x, y - x> + Lsm/2 * <y - x, y - x>],
+    one step of [sgd_step_vec eta theta := theta - eta * grad theta]
+    decreases [f] by at least [eta/2 * <grad theta, grad theta>] when
+    [eta * Lsm <= 1]. Telescoping gives the standard
+    [min_t <grad theta_t, grad theta_t> <= 2 (f theta_0 - f_lower) / (eta * T)]
+    rate to a delta-stationary point in [T = O(1/delta^2)] iterations.
+    This is the parameter-space-realistic version: real architectures
+    have R^n parameter vectors with n in the millions. *)
+
+Section SGDDescentVec.
+
+  Local Open Scope R_scope.
+
+  Variable n : nat.
+  Variable f : list R -> R.
+  Variable grad : list R -> list R.
+  Variable Lsm : R.
+  Hypothesis Lsm_pos : 0 < Lsm.
+
+  Hypothesis grad_dim :
+    forall theta, length theta = n -> length (grad theta) = n.
+
+  Hypothesis quadratic_upper_bound_vec :
+    forall x y, length x = n -> length y = n ->
+      f y <= f x + dot (grad x) (vec_sub y x) +
+              Lsm / 2 * dot (vec_sub y x) (vec_sub y x).
+
+  Definition vec_scale (c : R) (v : list R) : list R := map (Rmult c) v.
+
+  Lemma vec_scale_length :
+    forall c v, length (vec_scale c v) = length v.
+  Proof. intros c v. unfold vec_scale. apply length_map. Qed.
+
+  Lemma vec_sub_length :
+    forall u v, length u = length v -> length (vec_sub u v) = length u.
+  Proof.
+    induction u as [|x us IH]; intros v Hlen; destruct v as [|y vs];
+      simpl in *; try discriminate; [reflexivity|].
+    rewrite IH; [reflexivity | injection Hlen; intros; assumption].
+  Qed.
+
+  Lemma dot_self_nonneg :
+    forall v, 0 <= dot v v.
+  Proof.
+    induction v as [|x rest IH]; simpl; [lra|].
+    nra.
+  Qed.
+
+  Lemma dot_vec_scale_right :
+    forall u v c, length u = length v ->
+      dot u (vec_scale c v) = c * dot u v.
+  Proof.
+    induction u as [|x us IH]; intros v c Hlen;
+      destruct v as [|y vs]; simpl in *; try discriminate; [lra|].
+    injection Hlen as Hlen'.
+    rewrite (IH vs c Hlen'). lra.
+  Qed.
+
+  Lemma dot_self_vec_scale :
+    forall c v, dot (vec_scale c v) (vec_scale c v) = c * c * dot v v.
+  Proof.
+    induction v as [|x rest IH]; simpl; [lra|].
+    rewrite IH. nra.
+  Qed.
+
+  Definition sgd_step_vec (eta : R) (theta : list R) : list R :=
+    vec_sub theta (vec_scale eta (grad theta)).
+
+  Lemma sgd_step_vec_length :
+    forall eta theta,
+      length theta = n -> length (sgd_step_vec eta theta) = n.
+  Proof.
+    intros eta theta Hlen. unfold sgd_step_vec.
+    rewrite vec_sub_length.
+    - assumption.
+    - rewrite vec_scale_length, (grad_dim theta Hlen). assumption.
+  Qed.
+
+  Lemma vec_sub_step_eq :
+    forall eta theta,
+      length theta = n ->
+      vec_sub (sgd_step_vec eta theta) theta =
+      vec_scale (- eta) (grad theta).
+  Proof.
+    intros eta theta Hlen. unfold sgd_step_vec, vec_scale.
+    pose proof (grad_dim theta Hlen) as Hgrad_len.
+    rewrite <- Hlen in Hgrad_len.
+    clear Hlen.
+    remember (grad theta) as g eqn:Heqg. clear Heqg.
+    revert g Hgrad_len.
+    induction theta as [|t ts IH]; intros g Hgrad_len.
+    - destruct g.
+      + reflexivity.
+      + simpl in Hgrad_len. discriminate.
+    - destruct g as [|gh gs].
+      + simpl in Hgrad_len. discriminate.
+      + simpl in Hgrad_len.
+        assert (Hgs_len : length gs = length ts)
+          by (apply Nat.succ_inj; exact Hgrad_len).
+        pose proof (IH gs Hgs_len) as Htail.
+        cbn [vec_sub map].
+        rewrite Htail. f_equal. nra.
+  Qed.
+
+  Theorem sgd_descent_vec :
+    forall eta theta,
+      length theta = n ->
+      0 < eta -> eta * Lsm <= 1 ->
+      f (sgd_step_vec eta theta) <=
+      f theta - eta / 2 * dot (grad theta) (grad theta).
+  Proof.
+    intros eta theta Hlen Heta_pos HetaLsm.
+    pose proof (sgd_step_vec_length eta theta Hlen) as Hsgd_len.
+    pose proof (quadratic_upper_bound_vec theta (sgd_step_vec eta theta)
+                  Hlen Hsgd_len) as H.
+    rewrite (vec_sub_step_eq eta theta Hlen) in H.
+    rewrite (dot_vec_scale_right (grad theta) (grad theta) (-eta) eq_refl) in H.
+    rewrite dot_self_vec_scale in H.
+    pose proof (dot_self_nonneg (grad theta)) as Hsq.
+    assert (Hkey : 0 <= eta * dot (grad theta) (grad theta) * (1 - eta * Lsm)).
+    { apply Rmult_le_pos.
+      - apply Rmult_le_pos; lra.
+      - lra. }
+    nra.
+  Qed.
+
+  Fixpoint sgd_iterate_vec (eta : R) (theta0 : list R) (k : nat) : list R :=
+    match k with
+    | O => theta0
+    | S j => sgd_step_vec eta (sgd_iterate_vec eta theta0 j)
+    end.
+
+  Lemma sgd_iterate_vec_length :
+    forall eta theta0 k,
+      length theta0 = n -> length (sgd_iterate_vec eta theta0 k) = n.
+  Proof.
+    intros eta theta0 k Hlen.
+    induction k as [|j IH]; simpl; [assumption|].
+    apply sgd_step_vec_length. assumption.
+  Qed.
+
+  Fixpoint grad_norm_sq_sum (eta : R) (theta0 : list R) (k : nat) : R :=
+    match k with
+    | O => 0
+    | S j =>
+        grad_norm_sq_sum eta theta0 j +
+        dot (grad (sgd_iterate_vec eta theta0 j))
+            (grad (sgd_iterate_vec eta theta0 j))
+    end.
+
+  Theorem sgd_telescoping_vec_aux :
+    forall eta theta0 k,
+      length theta0 = n ->
+      0 < eta -> eta * Lsm <= 1 ->
+      (eta / 2) * grad_norm_sq_sum eta theta0 k
+      <= f theta0 - f (sgd_iterate_vec eta theta0 k).
+  Proof.
+    intros eta theta0 k Hlen Heta_pos HetaLsm.
+    induction k as [|j IH]; simpl.
+    - lra.
+    - set (theta_j := sgd_iterate_vec eta theta0 j) in *.
+      assert (Hjlen : length theta_j = n)
+        by (unfold theta_j; apply sgd_iterate_vec_length; assumption).
+      assert (Hdesc : f (sgd_step_vec eta theta_j) <=
+                       f theta_j -
+                       eta / 2 * dot (grad theta_j) (grad theta_j))
+        by (apply sgd_descent_vec; assumption).
+      pose proof (dot_self_nonneg (grad theta_j)) as Hsq.
+      nra.
+  Qed.
+
+  Theorem sgd_telescoping_vec :
+    forall eta theta0 k f_lower,
+      length theta0 = n ->
+      0 < eta -> eta * Lsm <= 1 ->
+      (forall x, length x = n -> f_lower <= f x) ->
+      (eta / 2) * grad_norm_sq_sum eta theta0 k <= f theta0 - f_lower.
+  Proof.
+    intros eta theta0 k f_lower Hlen Heta_pos HetaLsm Hf_lower.
+    pose proof (@sgd_telescoping_vec_aux eta theta0 k Hlen Heta_pos HetaLsm)
+      as Haux.
+    pose proof (Hf_lower (sgd_iterate_vec eta theta0 k)
+                          (sgd_iterate_vec_length eta theta0 k Hlen)).
+    lra.
+  Qed.
+
+End SGDDescentVec.
+
 (** ** Probabilistic concentration on finite uniform samples.
 
     Foundational ingredients for the PAC bound built directly from
