@@ -10468,17 +10468,29 @@ Section BitmaskMatching.
       so the [false :: tail]-flipped mask is reconstructible at each
       head step as [rev prefix ++ false :: tail]. *)
 
+  (** [mask_max_R_aux] returns [option R] so that the empty case
+      ("no available gts") is distinguished from the case where the
+      max happens to equal zero. The previous version returned [0]
+      in both cases, which forced a [cost_nonneg] hypothesis on the
+      correctness proof to prevent zero-clipping of negative-weight
+      matches. With [option R] and [None] as the empty marker, the
+      same correctness proof goes through with no positivity
+      assumption on the cost function. *)
   Fixpoint mask_max_R_aux (boxes : list Box) (mask : list bool) (gts : list GT)
                            (prefix : list bool)
                            (rec : list bool -> R)
-                           (b : Box) : R :=
+                           (b : Box) : option R :=
     match mask, gts with
-    | [], _ => 0
-    | _, [] => 0
+    | [], _ => None
+    | _, [] => None
     | true :: ms, g :: rest =>
         let modified_mask := rev prefix ++ false :: ms in
-        Rmax (cost b g + rec modified_mask)
-             (mask_max_R_aux boxes ms rest (true :: prefix) rec b)
+        let head := cost b g + rec modified_mask in
+        let tail := mask_max_R_aux boxes ms rest (true :: prefix) rec b in
+        match tail with
+        | None => Some head
+        | Some t => Some (Rmax head t)
+        end
     | false :: ms, _ :: rest =>
         mask_max_R_aux boxes ms rest (false :: prefix) rec b
     end.
@@ -10487,7 +10499,10 @@ Section BitmaskMatching.
                          (mask : list bool)
                          (rec : list bool -> R)
                          (b : Box) : R :=
-    mask_max_R_aux boxes mask gts [] rec b.
+    match mask_max_R_aux boxes mask gts [] rec b with
+    | Some r => r
+    | None => 0
+    end.
 
   Fixpoint bitmask_dp (boxes : list Box) (gts : list GT)
                        (mask : list bool) : R :=
@@ -10546,7 +10561,6 @@ Section BitmaskMatchingCorrectness.
   Variable Box GT : Type.
   Variable cost : Box -> GT -> R.
   Variable GT_eq_dec : forall g1 g2 : GT, {g1 = g2} + {g1 <> g2}.
-  Hypothesis cost_nonneg : forall b g, 0 <= cost b g.
 
   (** ** Length and identity helpers. *)
 
@@ -10652,22 +10666,6 @@ Section BitmaskMatchingCorrectness.
       right. apply IHx. assumption.
   Qed.
 
-  Lemma dp_max_match_nonneg :
-    forall (boxes : list Box) (gts : list GT),
-      NoDup gts ->
-      0 <= dp_max_match cost GT_eq_dec boxes gts.
-  Proof.
-    intros boxes. induction boxes as [|b rest IH]; intros gts Hnd; cbn.
-    - apply Rle_refl.
-    - destruct gts as [|g0 gs]; [apply Rle_refl|].
-      apply Rle_trans with (cost b g0 + dp_max_match cost GT_eq_dec rest
-                                          (dp_remove_first GT_eq_dec g0 (g0 :: gs))).
-      + assert (Hnd_rm : NoDup (dp_remove_first GT_eq_dec g0 (g0 :: gs))).
-        { apply dp_remove_first_NoDup_inner. assumption. }
-        pose proof (cost_nonneg b g0).
-        pose proof (IH _ Hnd_rm). lra.
-      + apply Rmax_list_init_le.
-  Qed.
 
   (** ** Walk-contributions characterization of [mask_max_R_aux]. *)
 
@@ -10684,17 +10682,51 @@ Section BitmaskMatchingCorrectness.
         walk_contributions b ms rest (false :: prefix) rec
     end.
 
-  Lemma mask_max_R_aux_eq_fold :
+  Lemma Rmax_swap_init_fold :
+    forall (a b : R) (l : list R),
+      Rmax a (fold_right Rmax b l) = Rmax b (fold_right Rmax a l).
+  Proof.
+    intros a b l. induction l as [|z rest IH]; cbn.
+    - apply Rmax_comm.
+    - rewrite Rmax_assoc.
+      rewrite (Rmax_comm a z).
+      rewrite <- Rmax_assoc.
+      rewrite IH.
+      rewrite Rmax_assoc.
+      rewrite (Rmax_comm z b).
+      rewrite <- Rmax_assoc.
+      reflexivity.
+  Qed.
+
+  Lemma mask_max_R_aux_eq_walk :
     forall (boxes_rest : list Box) (b : Box) (mask : list bool) (gts : list GT)
            (prefix : list bool) (rec : list bool -> R),
       mask_max_R_aux cost (b :: boxes_rest) mask gts prefix rec b =
-      fold_right Rmax 0 (walk_contributions b mask gts prefix rec).
+      match walk_contributions b mask gts prefix rec with
+      | [] => None
+      | h :: t => Some (fold_right Rmax h t)
+      end.
   Proof.
     intros boxes_rest b. induction mask as [|m_bit ms IH]; intros gts prefix rec.
     - cbn. reflexivity.
     - destruct m_bit; destruct gts as [|g rest]; cbn; try reflexivity.
-      + f_equal. apply IH.
+      + specialize (IH rest (true :: prefix) rec).
+        destruct (walk_contributions b ms rest (true :: prefix) rec) as [|h t].
+        * rewrite IH. reflexivity.
+        * rewrite IH.
+          set (head := cost b g + rec (rev prefix ++ false :: ms)).
+          f_equal. cbn.
+          symmetry. apply Rmax_swap_init_fold.
       + apply IH.
+  Qed.
+
+  Lemma Rmax_self_fold_right :
+    forall (h : R) (t : list R),
+      Rmax h (fold_right Rmax h t) = fold_right Rmax h t.
+  Proof.
+    intros h t. apply Rmax_right.
+    induction t as [|x rest IH]; cbn; [apply Rle_refl|].
+    eapply Rle_trans; [exact IH|]. apply Rmax_r.
   Qed.
 
   (** Walk contributions correspond elementwise to [dp_max_match]'s
@@ -10918,9 +10950,8 @@ Section BitmaskMatchingCorrectness.
     - cbn.
       destruct gts as [|g0 gs] eqn:Egts.
       + destruct mask; [|discriminate Hlen]. cbn. reflexivity.
-      + (* gts non-empty, so mask non-empty, mask_max_R is invoked *)
-        unfold mask_max_R.
-        rewrite mask_max_R_aux_eq_fold.
+      + unfold mask_max_R.
+        rewrite mask_max_R_aux_eq_walk.
         assert (Hrec : forall m, length m = length (g0 :: gs) ->
           bitmask_dp cost rest (g0 :: gs) m =
           dp_max_match cost GT_eq_dec rest (mask_to_gts m (g0 :: gs))).
@@ -10932,46 +10963,16 @@ Section BitmaskMatchingCorrectness.
                   (eq_refl : rev [] ++ mask = mask)
                   (eq_refl : skipn (length (@nil bool)) (g0 :: gs) = g0 :: gs)
                   Hrec).
-        (* Need: fold_right Rmax 0 (map f (mask_to_gts mask (g0::gs)))
-                 = dp_max_match cost (b :: rest) (mask_to_gts mask (g0::gs)) *)
-        (* dp_max_match (b :: rest) gs' for gs' = mask_to_gts mask gts.
-           If gs' = [], dp_max_match returns 0 and map is empty so fold = 0.
-           Else gs' = g0' :: rest', and
-             dp_max_match (b::rest) (g0' :: rest') = Rmax_list (f g0') (map f (g0' :: rest'))
-           where f g = cost b g + dp_max_match rest (dp_remove_first g (g0'::rest')). *)
         destruct (mask_to_gts mask (g0 :: gs)) as [|g0' rest'] eqn:Eselect.
         * cbn. reflexivity.
-        * (* Goal: fold_right Rmax 0 (map f' (g0' :: rest'))
-                  = dp_max_match cost (b :: rest) (g0' :: rest')
-             where f' is the post-cbn lambda. Both expand to the same
-             form modulo dp_remove_first reduction at the head. *)
+        * cbn [map].
           unfold dp_max_match. fold (@dp_max_match Box GT cost GT_eq_dec).
           set (f := fun g : GT =>
                       cost b g + dp_max_match cost GT_eq_dec rest
                         (dp_remove_first GT_eq_dec g (g0' :: rest'))).
           fold f.
-          unfold Rmax_list.
-          (* Goal becomes: fold_right Rmax 0 (map f (g0' :: rest'))
-                           = fold_right Rmax (f g0') (map f (g0' :: rest')) *)
-          cbn [map].
-          assert (Hsel_nd : NoDup (g0' :: rest')).
-          { rewrite <- Eselect. apply mask_to_gts_NoDup. exact Hnd. }
-          assert (Hnd_rm : forall g, NoDup (dp_remove_first GT_eq_dec g (g0' :: rest'))).
-          { intros g. apply dp_remove_first_NoDup_inner. exact Hsel_nd. }
-          apply (@fold_right_Rmax_zero_eq_when_init_in (f g0') (f g0' :: map f rest')).
-          -- (* 0 <= f g0' *)
-             unfold f. pose proof (cost_nonneg b g0').
-             pose proof (@dp_max_match_nonneg rest _ (Hnd_rm g0')). lra.
-          -- (* In (f g0') (f g0' :: map f rest') *)
-             cbn. left. reflexivity.
-          -- (* Forall non-neg *)
-             intros x Hx. cbn in Hx.
-             destruct Hx as [Heq | Hx].
-             ++ subst x. unfold f. pose proof (cost_nonneg b g0').
-                pose proof (@dp_max_match_nonneg rest _ (Hnd_rm g0')). lra.
-             ++ apply in_map_iff in Hx as [g [Heq Hg_in]]. subst x.
-                unfold f. pose proof (cost_nonneg b g).
-                pose proof (@dp_max_match_nonneg rest _ (Hnd_rm g)). lra.
+          unfold Rmax_list. cbn [map fold_right].
+          rewrite Rmax_self_fold_right. reflexivity.
   Qed.
 
   (** ** Master corollary: [bitmask_optimal] equals brute-force matching weight. *)
