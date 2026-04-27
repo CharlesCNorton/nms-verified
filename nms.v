@@ -6270,6 +6270,46 @@ Proof.
            Hnd Hsd Hsub Hsep1).
 Qed.
 
+(** ** Distance-bounded generalization beyond sublist.
+
+    The previous [Separated_subset] theorem requires [D_test ⊆ D_train].
+    A more applicable form: under a witness function [w : det -> det]
+    that maps each test detection to a train detection sharing its
+    box and with score within [eps] above, [Separated] transfers
+    with margin shifted by [2 * eps]. Pure deterministic extension —
+    no probability theory required. The witness models the natural
+    "test data is close to training data" structure that the sublist
+    hypothesis trivializes; this version captures actual neighborhood
+    relationships without forcing exact membership. *)
+
+Theorem Separated_score_close_lift :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (D_train D_test : list (@det Box)) (slack eps : nat)
+         (witness : @det Box -> @det Box),
+    (forall d, In d D_test -> In (witness d) D_train) ->
+    (forall d, In d D_test -> box (witness d) = box d) ->
+    (forall d, In d D_test ->
+       score d <= score (witness d) <= score d + eps) ->
+    (forall d1 d2, In d1 D_test -> In d2 D_test -> d1 <> d2 ->
+       witness d1 <> witness d2) ->
+    Separated iou tau theta (slack + 2 * eps) D_train ->
+    Separated iou tau theta slack D_test.
+Proof.
+  intros Box iou tau theta D_train D_test slack eps witness
+         Hwin Hwbox Hwclose Hwinj Hsep_train d d' Hin Hin' Hne Hiou.
+  pose proof (Hwbox d Hin) as Hbox_eq.
+  pose proof (Hwbox d' Hin') as Hbox_eq'.
+  pose proof (Hwclose d Hin) as [Hge Hle].
+  pose proof (Hwclose d' Hin') as [Hge' Hle'].
+  rewrite <- Hbox_eq, <- Hbox_eq' in Hiou.
+  specialize (Hsep_train (witness d) (witness d')
+                          (Hwin d Hin) (Hwin d' Hin')
+                          (Hwinj d d' Hin Hin' Hne) Hiou).
+  destruct Hsep_train as [[Hgap Hth] | [Hgap Hth]].
+  - left. split; lia.
+  - right. split; lia.
+Qed.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
