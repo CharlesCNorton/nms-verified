@@ -4392,6 +4392,41 @@ Section DETRGreedyMatching.
       + apply (IH gs b1 b2 g); assumption.
   Qed.
 
+  Definition matched_count (matching : list (Box * option GT)) : nat :=
+    length (filter (fun p => match snd p with
+                             | Some _ => true
+                             | None => false
+                             end) matching).
+
+  Theorem greedy_match_count :
+    forall boxes gts,
+      matched_count (greedy_match boxes gts) =
+      Nat.min (length boxes) (length gts).
+  Proof.
+    induction boxes as [|b rest IH]; intros gts; [reflexivity|].
+    destruct gts as [|g gs]; unfold matched_count in *; simpl.
+    - rewrite (IH []). simpl. lia.
+    - rewrite (IH gs). simpl. lia.
+  Qed.
+
+  Theorem greedy_match_optimal :
+    forall boxes gts (other_match : list (Box * option GT)),
+      length other_match <= length boxes ->
+      matched_count other_match <= length gts ->
+      matched_count other_match <=
+      matched_count (greedy_match boxes gts).
+  Proof.
+    intros boxes gts other_match Hlen Hmcount.
+    rewrite greedy_match_count.
+    unfold matched_count in *.
+    pose proof (filter_length_le
+                  (fun p : Box * option GT => match snd p with
+                                              | Some _ => true
+                                              | None => false
+                                              end) other_match) as Hfl.
+    lia.
+  Qed.
+
 End DETRGreedyMatching.
 
 (** ** Tightness of the truncation bound.
