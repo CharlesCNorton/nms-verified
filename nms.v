@@ -8108,6 +8108,92 @@ End ConvergenceUnderPL.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XIV. L_separated_sq full zero-locus equivalence          *)
+(** ******************************************************************** *)
+
+(** Per-pair, [pair_violation_sq_zero_iff] establishes that the
+    squared-hinge surrogate has the same zero locus as the L1-hinge:
+    [pair_violation_sq m d d' = 0 <-> pair_violation m d d' = 0]
+    (already proved in Part V).
+
+    This part lifts the equivalence to the sum:
+    [L_separated_sq m D = 0 <-> L_separated m D = 0]. Combined with
+    [L_separated_zero_iff_separated_general] (already proved),
+    [L_separated_sq] vanishes exactly on the [Separated] locus, with
+    the integer slack [k] given by the real margin [INR k].
+
+    [fold_right_Rplus_zero_iff] (Part VI's helper) provides the key
+    technical fact: a finite sum of non-negative reals vanishes iff
+    each summand vanishes. Combined with the elementwise zero-iff of
+    pair_violation_sq vs pair_violation, the lifted equivalence
+    follows by routine flat_map / map manipulation.
+
+    Theorems delivered:
+
+      Theorem 1.  L_separated_sq_zero_iff_L_separated_zero
+      Theorem 2.  L_separated_sq_zero_iff_separated_general
+                  — full chain L_separated_sq = 0 <-> Separated *)
+
+Local Open Scope R_scope.
+
+Theorem L_separated_sq_zero_iff_L_separated_zero :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (m : R) (D : list (@det Box)),
+    L_separated_sq iou tau theta box_eq_dec_l m D = 0 <->
+    L_separated iou tau theta box_eq_dec_l m D = 0.
+Proof.
+  intros Box iou tau theta box_eq_dec_l m D.
+  unfold L_separated_sq, L_separated.
+  assert (Hnn_sq : forall x,
+    In x (flat_map (fun d =>
+      map (fun d' => pair_violation_sq iou tau theta box_eq_dec_l m d d') D) D)
+    -> 0 <= x).
+  { intros x Hx. apply in_flat_map in Hx as [d [_ Hd]].
+    apply in_map_iff in Hd as [d' [Heq _]]. subst x.
+    apply pair_violation_sq_nonneg. }
+  assert (Hnn_l1 : forall x,
+    In x (flat_map (fun d =>
+      map (fun d' => pair_violation iou tau theta box_eq_dec_l m d d') D) D)
+    -> 0 <= x).
+  { intros x Hx. apply in_flat_map in Hx as [d [_ Hd]].
+    apply in_map_iff in Hd as [d' [Heq _]]. subst x.
+    apply pair_violation_nonneg. }
+  rewrite (fold_right_Rplus_zero_iff _ Hnn_sq).
+  rewrite (fold_right_Rplus_zero_iff _ Hnn_l1).
+  split.
+  - intros Hsq x Hx.
+    apply in_flat_map in Hx as [d [Hd Hd_in]].
+    apply in_map_iff in Hd_in as [d' [Heq Hd'_in]]. subst x.
+    apply (proj1 (pair_violation_sq_zero_iff iou tau theta box_eq_dec_l m d d')).
+    apply Hsq.
+    apply in_flat_map. exists d. split; [assumption|].
+    apply in_map_iff. exists d'. split; [reflexivity|assumption].
+  - intros HL x Hx.
+    apply in_flat_map in Hx as [d [Hd Hd_in]].
+    apply in_map_iff in Hd_in as [d' [Heq Hd'_in]]. subst x.
+    apply (proj2 (pair_violation_sq_zero_iff iou tau theta box_eq_dec_l m d d')).
+    apply HL.
+    apply in_flat_map. exists d. split; [assumption|].
+    apply in_map_iff. exists d'. split; [reflexivity|assumption].
+Qed.
+
+Theorem L_separated_sq_zero_iff_separated_general :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (D : list (@det Box)) (k : nat),
+    (1 <= k)%nat -> (k <= theta)%nat ->
+    L_separated_sq iou tau theta box_eq_dec_l (INR k) D = 0 <->
+    Separated iou tau theta k D.
+Proof.
+  intros Box iou tau theta box_eq_dec_l D k Hk_pos Hk_le_theta.
+  rewrite L_separated_sq_zero_iff_L_separated_zero.
+  apply L_separated_zero_iff_separated_general; assumption.
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
