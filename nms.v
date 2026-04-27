@@ -11892,3 +11892,605 @@ Proof.
 Qed.
 
 Local Close Scope R_scope.
+
+(** ******************************************************************** *)
+(** *        Section 6. iid sampling and PAC generalization              *)
+(** ******************************************************************** *)
+
+(** A discrete probability library built on top of the existing
+    [prob_uniform] / [expect_uniform] / [mgf_uniform] primitives. An
+    iid sample of size [n] from a finite distribution [D] is one
+    element of the uniform-product distribution on [D^n], represented
+    as the list of all length-[n] samples. The product MGF
+    factorization follows by induction on [n] without further
+    measure-theoretic infrastructure, and Hoeffding's lemma (already
+    proved in symmetric and asymmetric forms in Section 5) gives the
+    standard exponential tail bounds on empirical means. The
+    finite-class PAC bound follows by Bonferroni's union bound
+    (already proved in Section 3). The infinite-class form via
+    covering numbers is left for future work; covering numbers
+    require either a VC-dimension theory or a metric-entropy library
+    beyond what Stdlib provides. *)
+
+Local Open Scope R_scope.
+
+(** ** All length-[n] iid samples from a discrete distribution. *)
+
+Fixpoint all_iid_samples (D : list R) (n : nat) : list (list R) :=
+  match n with
+  | O => [[]]
+  | S k => flat_map (fun s => map (fun x => x :: s) D) (all_iid_samples D k)
+  end.
+
+Lemma all_iid_samples_length :
+  forall D n, length (all_iid_samples D n) = ((length D) ^ n)%nat.
+Proof.
+  intros D. induction n as [|k IH].
+  - reflexivity.
+  - cbn [all_iid_samples Nat.pow].
+    rewrite <- IH.
+    set (L := all_iid_samples D k). clearbody L. clear IH.
+    induction L as [|a rest IH'].
+    + cbn. lia.
+    + cbn [flat_map length]. rewrite length_app. rewrite length_map.
+      rewrite IH'. nia.
+Qed.
+
+Lemma all_iid_samples_each_length :
+  forall D n s, In s (all_iid_samples D n) -> length s = n.
+Proof.
+  intros D n. induction n as [|k IH]; intros s Hs; cbn in Hs.
+  - destruct Hs as [Heq | []]. subst. reflexivity.
+  - apply in_flat_map in Hs as [s0 [Hs0_in Hs_in]].
+    apply in_map_iff in Hs_in as [x [Heq Hx_in]]. subst s.
+    cbn. f_equal. apply IH. assumption.
+Qed.
+
+Lemma all_iid_samples_each_in :
+  forall D n s x, In s (all_iid_samples D n) -> In x s -> In x D.
+Proof.
+  intros D n. induction n as [|k IH]; intros s x Hs Hx; cbn in Hs.
+  - destruct Hs as [Heq | []]. subst. cbn in Hx. contradiction.
+  - apply in_flat_map in Hs as [s0 [Hs0_in Hs_in]].
+    apply in_map_iff in Hs_in as [y [Heq Hy_in]]. subst s.
+    cbn in Hx. destruct Hx as [Heq | Hx]; [subst; assumption|].
+    apply (IH s0 x Hs0_in Hx).
+Qed.
+
+Lemma all_iid_samples_length_pos :
+  forall D n, D <> [] -> (0 < length (all_iid_samples D n))%nat.
+Proof.
+  intros D n HD. rewrite all_iid_samples_length.
+  assert (HDpos : (0 < length D)%nat)
+    by (destruct D; [contradiction | cbn; lia]).
+  induction n; cbn; nia.
+Qed.
+
+(** ** Real-sum helpers used by the MGF factorization. *)
+
+Lemma fold_right_Rplus_app_local :
+  forall l1 l2 : list R,
+    fold_right Rplus 0 (l1 ++ l2)
+    = fold_right Rplus 0 l1 + fold_right Rplus 0 l2.
+Proof.
+  induction l1 as [|x rest IH]; intros l2; cbn; [lra|].
+  rewrite IH. lra.
+Qed.
+
+Lemma fold_right_Rplus_concat_local :
+  forall L : list (list R),
+    fold_right Rplus 0 (concat L)
+    = fold_right Rplus 0 (map (fold_right Rplus 0) L).
+Proof.
+  induction L as [|x rest IH]; cbn; [reflexivity|].
+  rewrite fold_right_Rplus_app_local. rewrite IH. reflexivity.
+Qed.
+
+Lemma fold_right_Rplus_flat_map_local :
+  forall {A : Type} (l : list A) (f : A -> list R),
+    fold_right Rplus 0 (flat_map f l)
+    = fold_right Rplus 0 (map (fun x => fold_right Rplus 0 (f x)) l).
+Proof.
+  intros A l f. rewrite flat_map_concat_map.
+  rewrite fold_right_Rplus_concat_local. rewrite map_map. reflexivity.
+Qed.
+
+Lemma fold_right_Rplus_map_mul_const_left :
+  forall {A : Type} (l : list A) (f : A -> R) (c : R),
+    fold_right Rplus 0 (map (fun x => c * f x) l)
+    = c * fold_right Rplus 0 (map f l).
+Proof.
+  intros A l f c. induction l as [|x rest IH]; cbn; [lra|].
+  rewrite IH. lra.
+Qed.
+
+Lemma fold_right_Rplus_map_mul_const_right :
+  forall {A : Type} (l : list A) (f : A -> R) (c : R),
+    fold_right Rplus 0 (map (fun x => f x * c) l)
+    = fold_right Rplus 0 (map f l) * c.
+Proof.
+  intros A l f c. induction l as [|x rest IH]; cbn; [lra|].
+  rewrite IH. lra.
+Qed.
+
+Lemma fold_right_Rplus_nonneg_local :
+  forall (l : list R), (forall x, In x l -> 0 <= x) ->
+    0 <= fold_right Rplus 0 l.
+Proof.
+  induction l as [|x rest IH]; intros Hnn; cbn; [lra|].
+  apply Rplus_le_le_0_compat.
+  - apply Hnn. left; reflexivity.
+  - apply IH. intros y Hy. apply Hnn. right; assumption.
+Qed.
+
+Lemma fold_right_Rmult_exp_lam :
+  forall (l : list R) (lam : R) (f : R -> R),
+    fold_right Rmult 1 (map (fun x => exp (lam * f x)) l)
+    = exp (lam * fold_right Rplus 0 (map f l)).
+Proof.
+  intros l lam f. induction l as [|x rest IH]; cbn.
+  - rewrite Rmult_0_r, exp_0. reflexivity.
+  - rewrite IH. rewrite <- exp_plus. f_equal. ring.
+Qed.
+
+Lemma exp_pow_lin :
+  forall (x : R) (n : nat), exp x ^ n = exp (INR n * x).
+Proof.
+  intros x n. induction n as [|k IH].
+  - cbn. rewrite Rmult_0_l, exp_0. reflexivity.
+  - rewrite S_INR. cbn [pow].
+    rewrite IH. rewrite <- exp_plus. f_equal. ring.
+Qed.
+
+Lemma map_flat_map_eq :
+  forall {A B C : Type} (f : B -> C) (g : A -> list B) (l : list A),
+    map f (flat_map g l) = flat_map (fun x => map f (g x)) l.
+Proof.
+  intros A B C f g l. induction l as [|x rest IH]; cbn; [reflexivity|].
+  rewrite map_app. rewrite IH. reflexivity.
+Qed.
+
+(** ** Product MGF factorization for iid samples. *)
+
+Theorem sum_map_iid_product :
+  forall (D : list R) (g : R -> R) (n : nat),
+    fold_right Rplus 0
+      (map (fun s => fold_right Rmult 1 (map g s)) (all_iid_samples D n))
+    = (fold_right Rplus 0 (map g D)) ^ n.
+Proof.
+  intros D g n.
+  induction n as [|k IH].
+  - cbn. lra.
+  - cbn [all_iid_samples].
+    rewrite map_flat_map_eq.
+    rewrite fold_right_Rplus_flat_map_local.
+    set (K := fold_right Rplus 0 (map g D)).
+    assert (Hext : forall t : list R,
+      fold_right Rplus 0
+        (map (fun s => fold_right Rmult 1 (map g s))
+             (map (fun x => x :: t) D))
+      = K * fold_right Rmult 1 (map g t)).
+    { intros t. rewrite map_map.
+      transitivity (fold_right Rplus 0
+        (map (fun x => g x * fold_right Rmult 1 (map g t)) D)).
+      - apply (f_equal (fold_right Rplus 0)).
+        apply map_ext. intros x. cbn [map fold_right]. reflexivity.
+      - unfold K. apply fold_right_Rplus_map_mul_const_right. }
+    rewrite (map_ext _ _ Hext).
+    rewrite fold_right_Rplus_map_mul_const_left.
+    rewrite IH. cbn [pow]. unfold K. ring.
+Qed.
+
+Theorem sum_iid_mgf_factor :
+  forall (D : list R) (n : nat) (f : R -> R) (lam : R),
+    fold_right Rplus 0
+      (map (fun s => exp (lam * fold_right Rplus 0 (map f s)))
+           (all_iid_samples D n))
+    = (fold_right Rplus 0 (map (fun x => exp (lam * f x)) D)) ^ n.
+Proof.
+  intros D n f lam.
+  rewrite <- (sum_map_iid_product D (fun x => exp (lam * f x)) n).
+  apply (f_equal (fold_right Rplus 0)).
+  apply map_ext. intros s.
+  symmetry. apply fold_right_Rmult_exp_lam.
+Qed.
+
+(** ** Empirical-mean MGF bound: the iid empirical MGF is bounded by
+    [exp(n * lam^2 (b - a)^2 / 8)] when [g] is centered and [g(x) ∈ [a,b]]. *)
+
+Lemma mgf_iid_sum_bound :
+  forall (D : list R) (g : R -> R) (n : nat) (a b lam : R),
+    D <> [] -> (1 <= n)%nat ->
+    a < b -> a <= 0 <= b ->
+    fold_right Rplus 0 (map g D) = 0 ->
+    (forall x, In x D -> a <= g x <= b) ->
+    expect_uniform
+      (map (fun s => exp (lam * fold_right Rplus 0 (map g s)))
+           (all_iid_samples D n))
+    <= exp (INR n * (lam * lam * (b - a) * (b - a) / 8)).
+Proof.
+  intros D g n a b lam HD Hn Hab Hcent Hsum_zero Hbnd.
+  assert (HD_pos : (0 < length D)%nat)
+    by (destruct D; [contradiction | cbn; lia]).
+  assert (HD_R_pos : 0 < INR (length D)) by (apply lt_0_INR; lia).
+  assert (HD_n_pos : (0 < length D ^ n)%nat).
+  { clear -HD_pos. induction n; cbn; nia. }
+  assert (HD_n_R_pos : 0 < INR (length D ^ n)) by (apply lt_0_INR; lia).
+  assert (Hbnd' : forall x, In x (map g D) -> a <= x <= b).
+  { intros x Hx. apply in_map_iff in Hx as [y [Heq Hy_in]]. subst x.
+    apply Hbnd. assumption. }
+  pose proof (@hoeffding_lemma_asymmetric (map g D) lam a b Hab Hcent
+                Hsum_zero Hbnd') as Hhoeff.
+  rewrite map_map in Hhoeff. rewrite length_map in Hhoeff.
+  set (per := fold_right Rplus 0 (map (fun x => exp (lam * g x)) D)).
+  fold per in Hhoeff.
+  assert (Hper_nn : 0 <= per).
+  { unfold per. apply fold_right_Rplus_nonneg_local. intros x Hx.
+    apply in_map_iff in Hx as [y [Heq _]]. subst x. left. apply exp_pos. }
+  unfold expect_uniform. rewrite !length_map.
+  rewrite !all_iid_samples_length.
+  destruct (Nat.eqb_spec (length D ^ n) 0) as [Hz | _]; [lia|].
+  rewrite sum_iid_mgf_factor. fold per.
+  assert (Hpow_le :
+    per ^ n
+    <= (INR (length D) * exp (lam * lam * (b - a) * (b - a) / 8)) ^ n).
+  { apply pow_incr. split; assumption. }
+  apply Rmult_le_reg_r with (r := INR (length D ^ n)); [exact HD_n_R_pos|].
+  unfold Rdiv. rewrite Rmult_assoc. rewrite Rinv_l by lra.
+  rewrite Rmult_1_r.
+  eapply Rle_trans; [exact Hpow_le|].
+  rewrite Rpow_mult_distr. rewrite exp_pow_lin.
+  rewrite <- pow_INR. rewrite Rmult_comm. apply Rle_refl.
+Qed.
+
+(** ** One-sided Hoeffding tail bound for an iid sum.
+
+    For a centered function [g] with [g(x) ∈ [a, b]] and [a ≤ 0 ≤ b],
+    the probability that the iid sum [Σ g(s_i)] (over an iid sample
+    [s] of size [n] from [D]) exceeds [t > 0] is at most
+    [exp(-2 t^2 / (n (b - a)^2))]. This is the standard Hoeffding tail
+    bound, derived by composing [chernoff_markov_bound] with the iid
+    MGF factorization [sum_iid_mgf_factor] and Hoeffding's lemma.
+    The optimization step (choosing [lam = 4 t / (n (b - a)^2)]) is
+    instantiated explicitly. *)
+
+Theorem hoeffding_iid_sum_one_sided :
+  forall (D : list R) (g : R -> R) (n : nat) (a b t : R),
+    D <> [] -> (1 <= n)%nat ->
+    a < b -> a <= 0 <= b -> 0 < t ->
+    fold_right Rplus 0 (map g D) = 0 ->
+    (forall x, In x D -> a <= g x <= b) ->
+    prob_uniform
+      (map (fun s => fold_right Rplus 0 (map g s)) (all_iid_samples D n))
+      (fun y => if Rle_dec t y then true else false)
+    <= exp (- 2 * t * t / (INR n * (b - a) * (b - a))).
+Proof.
+  intros D g n a b t HD Hn Hab Hcent Ht Hsum_zero Hbnd.
+  set (lam := 4 * t / (INR n * (b - a) * (b - a))).
+  set (sum_list :=
+         map (fun s => fold_right Rplus 0 (map g s)) (all_iid_samples D n)).
+  assert (Hba_pos : 0 < b - a) by lra.
+  assert (Hn_pos : 0 < INR n) by (apply lt_0_INR; lia).
+  assert (Hdenom_pos : 0 < INR n * (b - a) * (b - a)).
+  { apply Rmult_lt_0_compat;
+      [apply Rmult_lt_0_compat; assumption | assumption]. }
+  assert (Hlam_pos : 0 < lam).
+  { unfold lam, Rdiv. apply Rmult_lt_0_compat;
+      [lra | apply Rinv_0_lt_compat; exact Hdenom_pos]. }
+  pose proof (@chernoff_markov_bound sum_list lam t Hlam_pos) as Hchern.
+  unfold mgf_uniform in Hchern.
+  assert (Hmgf_eq :
+    expect_uniform (map (fun x => exp (lam * x)) sum_list)
+    = expect_uniform
+        (map (fun s => exp (lam * fold_right Rplus 0 (map g s)))
+             (all_iid_samples D n))).
+  { unfold sum_list. rewrite map_map. reflexivity. }
+  rewrite Hmgf_eq in Hchern.
+  pose proof (@mgf_iid_sum_bound D g n a b lam HD Hn Hab Hcent Hsum_zero Hbnd)
+    as Hmgf_bound.
+  assert (Hexp_pos_t : 0 < exp (lam * t)) by apply exp_pos.
+  apply (Rmult_le_reg_l (exp (lam * t))); [exact Hexp_pos_t|].
+  eapply Rle_trans; [exact Hchern|].
+  eapply Rle_trans; [exact Hmgf_bound|].
+  rewrite <- exp_plus.
+  apply Req_le. f_equal.
+  unfold lam. field. lra.
+Qed.
+
+(** ** Polymorphic empirical probability and union bounds.
+
+    The existing [prob_uniform] / [bonferroni_list] are specialized to
+    [list R]. To state the finite-class PAC bound over [list (list R)]
+    samples (the iid sample space), we lift the same definitions to
+    arbitrary types. *)
+
+Definition prob_uniform_t {A : Type} (samples : list A) (event : A -> bool) : R :=
+  if Nat.eqb (length samples) 0 then 0
+  else INR (length (filter event samples)) / INR (length samples).
+
+Lemma prob_uniform_t_R_eq :
+  forall (samples : list R) (event : R -> bool),
+    prob_uniform_t samples event = prob_uniform samples event.
+Proof.
+  intros. unfold prob_uniform_t, prob_uniform. reflexivity.
+Qed.
+
+Lemma prob_uniform_t_nonneg :
+  forall {A : Type} (samples : list A) (event : A -> bool),
+    0 <= prob_uniform_t samples event.
+Proof.
+  intros A samples event. unfold prob_uniform_t.
+  destruct (Nat.eqb_spec (length samples) 0) as [_|Hne]; [lra|].
+  apply Rmult_le_pos; [apply pos_INR | ].
+  left. apply Rinv_0_lt_compat. apply lt_0_INR. lia.
+Qed.
+
+Lemma length_filter_or_le_t :
+  forall {A : Type} (l : list A) (P Q : A -> bool),
+    (length (filter (fun x => orb (P x) (Q x)) l) <=
+     length (filter P l) + length (filter Q l))%nat.
+Proof.
+  intros A l P Q.
+  induction l as [|x rest IH]; cbn; [lia|].
+  destruct (P x) eqn:EP; destruct (Q x) eqn:EQ; cbn; lia.
+Qed.
+
+Theorem bonferroni_two_t :
+  forall {A : Type} (samples : list A) (P Q : A -> bool),
+    prob_uniform_t samples (fun x => orb (P x) (Q x)) <=
+    prob_uniform_t samples P + prob_uniform_t samples Q.
+Proof.
+  intros A samples P Q. unfold prob_uniform_t.
+  destruct (Nat.eqb_spec (length samples) 0) as [_|Hne]; [lra|].
+  assert (Hpos : 0 < INR (length samples)) by (apply lt_0_INR; lia).
+  pose proof (length_filter_or_le_t samples P Q) as Hle.
+  apply Rmult_le_reg_r with (r := INR (length samples)); [exact Hpos|].
+  replace
+    (INR (length (filter (fun x => orb (P x) (Q x)) samples)) /
+     INR (length samples) * INR (length samples))
+    with (INR (length (filter (fun x => orb (P x) (Q x)) samples)))
+    by (field; lra).
+  replace
+    ((INR (length (filter P samples)) / INR (length samples) +
+      INR (length (filter Q samples)) / INR (length samples)) *
+     INR (length samples))
+    with
+    (INR (length (filter P samples)) + INR (length (filter Q samples)))
+    by (field; lra).
+  rewrite <- plus_INR. apply le_INR. assumption.
+Qed.
+
+Theorem bonferroni_list_t :
+  forall {A : Type} (samples : list A) (events : list (A -> bool)),
+    prob_uniform_t samples
+      (fun x => existsb (fun e => e x) events) <=
+    fold_right Rplus 0 (map (fun e => prob_uniform_t samples e) events).
+Proof.
+  intros A samples events.
+  induction events as [|e rest IH]; cbn.
+  - unfold prob_uniform_t.
+    destruct (Nat.eqb_spec (length samples) 0) as [_|Hne]; [lra|].
+    assert (Hpos : 0 < INR (length samples)) by (apply lt_0_INR; lia).
+    assert (Hf : forall l : list A, filter (fun _ : A => false) l = []).
+    { intros l. induction l as [|x rest' IH']; cbn; [reflexivity|assumption]. }
+    rewrite (Hf samples). cbn. lra.
+  - eapply Rle_trans.
+    + apply (bonferroni_two_t samples e
+              (fun x => existsb (fun e0 => e0 x) rest)).
+    + apply Rplus_le_compat_l. exact IH.
+Qed.
+
+(** ** Projection lemma: probability over an arbitrary type via a
+    real-valued projection coincides with probability over the
+    projected list. Lets us reuse [prob_uniform] / Hoeffding tail
+    bounds on iid samples by going through a sum projection. *)
+
+Lemma prob_uniform_t_proj :
+  forall {A : Type} (samples : list A) (proj : A -> R) (event : R -> bool),
+    prob_uniform_t samples (fun x => event (proj x)) =
+    prob_uniform (map proj samples) event.
+Proof.
+  intros A samples proj event.
+  unfold prob_uniform_t, prob_uniform.
+  rewrite length_map.
+  destruct (Nat.eqb_spec (length samples) 0) as [_|_]; [reflexivity|].
+  do 2 f_equal.
+  induction samples as [|s rest IH]; cbn; [reflexivity|].
+  destruct (event (proj s)); cbn; rewrite IH; reflexivity.
+Qed.
+
+Lemma existsb_map_eq :
+  forall {A B : Type} (f : A -> B) (g : B -> bool) (l : list A),
+    existsb g (map f l) = existsb (fun x => g (f x)) l.
+Proof.
+  intros A B f g l. induction l as [|x rest IH]; cbn; [reflexivity|].
+  rewrite IH. reflexivity.
+Qed.
+
+Lemma filter_ext_local :
+  forall {A : Type} (f g : A -> bool),
+    (forall x, f x = g x) ->
+    forall l, filter f l = filter g l.
+Proof.
+  intros A f g Heq l. induction l as [|x rest IH]; cbn; [reflexivity|].
+  rewrite Heq. destruct (g x); rewrite IH; reflexivity.
+Qed.
+
+Lemma prob_uniform_t_ext :
+  forall {A : Type} (samples : list A) (E1 E2 : A -> bool),
+    (forall x, E1 x = E2 x) ->
+    prob_uniform_t samples E1 = prob_uniform_t samples E2.
+Proof.
+  intros A samples E1 E2 Hext. unfold prob_uniform_t.
+  destruct (Nat.eqb _ _); [reflexivity|].
+  rewrite (filter_ext_local _ _ Hext). reflexivity.
+Qed.
+
+(** ** Finite-class one-sided Hoeffding PAC bound.
+
+    The headline PAC generalization theorem. For a finite class
+    [G = [g_1; ...; g_M]] of centered bounded functions, the
+    probability over an iid sample [s] of size [n] from [D] that any
+    [g_i] has empirical sum [Σ g_i(s_j) ≥ t] is bounded by
+    [M · exp(-2 t^2 / (n (b - a)^2))]. Setting [t = n ε] yields the
+    standard form: empirical-mean uniform deviation by ε at confidence
+    [M · exp(-2 n ε^2 / (b - a)^2)]. The bound is exponentially tighter
+    than the [massart_uniform_deviation] bound for the same setting
+    because the per-event tail is exponential rather than Markov. *)
+
+Theorem hoeffding_iid_finite_class_one_sided :
+  forall (D : list R) (G : list (R -> R)) (n : nat) (a b t : R),
+    D <> [] -> (1 <= n)%nat ->
+    a < b -> a <= 0 <= b -> 0 < t ->
+    (forall g, In g G -> fold_right Rplus 0 (map g D) = 0) ->
+    (forall g x, In g G -> In x D -> a <= g x <= b) ->
+    prob_uniform_t (all_iid_samples D n)
+      (fun s => existsb
+                  (fun g => if Rle_dec t (fold_right Rplus 0 (map g s))
+                            then true else false) G)
+    <= INR (length G) * exp (- 2 * t * t / (INR n * (b - a) * (b - a))).
+Proof.
+  intros D G n a b t HD Hn Hab Hcent Ht Hcent_g Hbnd_g.
+  set (per_bound := exp (- 2 * t * t / (INR n * (b - a) * (b - a)))).
+  set (event_g := fun (g : R -> R) (s : list R) =>
+    if Rle_dec t (fold_right Rplus 0 (map g s)) then true else false).
+  rewrite (prob_uniform_t_ext (all_iid_samples D n)
+              (fun s => existsb (fun g => if Rle_dec t (fold_right Rplus 0 (map g s))
+                                           then true else false) G)
+              (fun s => existsb (fun e => e s) (map event_g G))).
+  - eapply Rle_trans.
+    + apply (bonferroni_list_t (all_iid_samples D n) (map event_g G)).
+    + rewrite map_map.
+      assert (Hper_g : forall g, In g G ->
+        prob_uniform_t (all_iid_samples D n) (event_g g) <= per_bound).
+      { intros g Hg.
+        apply Rle_trans with
+          (prob_uniform
+            (map (fun s => fold_right Rplus 0 (map g s)) (all_iid_samples D n))
+            (fun y => if Rle_dec t y then true else false)).
+        - apply Req_le.
+          change (event_g g)
+            with (fun x : list R =>
+                    (fun y : R => if Rle_dec t y then true else false)
+                      (fold_right Rplus 0 (map g x))).
+          apply (@prob_uniform_t_proj (list R) (all_iid_samples D n)
+                    (fun s => fold_right Rplus 0 (map g s))
+                    (fun y => if Rle_dec t y then true else false)).
+        - unfold per_bound.
+          apply (@hoeffding_iid_sum_one_sided D g n a b t HD Hn Hab Hcent Ht).
+          + apply Hcent_g. assumption.
+          + intros x Hx. apply Hbnd_g; assumption. }
+      transitivity
+        (fold_right Rplus 0 (map (fun _ : R -> R => per_bound) G)).
+      * clear -Hper_g.
+        induction G as [|g rest IH]; cbn; [lra|].
+        apply Rplus_le_compat.
+        -- apply Hper_g. left; reflexivity.
+        -- apply IH. intros g' Hg'. apply Hper_g. right; assumption.
+      * clear -G.
+        assert (Heq : fold_right Rplus 0
+                        (map (fun _ : R -> R => per_bound) G)
+                    = INR (length G) * per_bound).
+        { induction G as [|g rest IH].
+          - cbn. lra.
+          - cbn [length map fold_right]. rewrite IH.
+            rewrite S_INR. ring. }
+        rewrite Heq. apply Rle_refl.
+  - intros s. symmetry. apply existsb_map_eq.
+Qed.
+
+(** ** Empirical Rademacher complexity for a finite hypothesis class.
+
+    The Rademacher distribution support [rad_signs n] is the set of
+    sign sequences in {-1, +1}^n, instantiated as iid samples from
+    the two-element distribution [[-1; 1]]. The empirical Rademacher
+    complexity averages, over Rademacher sign assignments, the
+    supremum over a finite class [G] of [(1/n) Σ_i σ_i g(x_i)].
+
+    The classical Massart finite-class bound
+    [emp_rademacher samples G ≤ B sqrt(2 ln |G| / |samples|)] requires
+    Jensen's inequality on the [exp]/[ln] pair (specifically
+    [exp(E[max]) ≤ E[exp(max)]]) which is provable from [exp_convex]
+    by induction on a finite distribution. The definition and
+    nonnegativity are delivered here; the Massart bound itself is a
+    structurally similar exercise to [hoeffding_iid_finite_class_one_sided],
+    using the same MGF/union-bound machinery composed with a finite
+    Jensen step. *)
+
+Definition expect_uniform_t {A : Type} (samples : list A) (f : A -> R) : R :=
+  if Nat.eqb (length samples) 0 then 0
+  else fold_right Rplus 0 (map f samples) / INR (length samples).
+
+Definition rad_signs (n : nat) : list (list R) := all_iid_samples [-1; 1] n.
+
+Lemma rad_signs_length :
+  forall n, length (rad_signs n) = (2 ^ n)%nat.
+Proof.
+  intros n. unfold rad_signs.
+  rewrite all_iid_samples_length. cbn. reflexivity.
+Qed.
+
+Lemma rad_signs_nonempty :
+  forall n, rad_signs n <> [].
+Proof.
+  intros n. unfold rad_signs. intros Hempty.
+  assert (HD : ([-1; 1] : list R) <> []) by discriminate.
+  pose proof (@all_iid_samples_length_pos [-1; 1] n HD) as Hpos.
+  rewrite Hempty in Hpos. cbn in Hpos. lia.
+Qed.
+
+Lemma rad_signs_each_pm_one :
+  forall n sigma x, In sigma (rad_signs n) -> In x sigma -> x = -1 \/ x = 1.
+Proof.
+  intros n sigma x Hsigma Hx. unfold rad_signs in Hsigma.
+  pose proof (all_iid_samples_each_in [-1; 1] n sigma x Hsigma Hx) as Hin.
+  cbn in Hin. destruct Hin as [Heq | [Heq | []]];
+    [left | right]; symmetry; assumption.
+Qed.
+
+Fixpoint inner_prod_rad (sigma samples : list R) (g : R -> R) : R :=
+  match sigma, samples with
+  | s :: ss, x :: xs => s * g x + inner_prod_rad ss xs g
+  | _, _ => 0
+  end.
+
+Definition emp_rademacher (samples : list R) (G : list (R -> R)) : R :=
+  expect_uniform_t (rad_signs (length samples))
+    (fun sigma =>
+      Rmax_list 0
+        (map (fun g => inner_prod_rad sigma samples g / INR (length samples)) G)).
+
+Lemma inner_prod_rad_zero :
+  forall samples g, inner_prod_rad [] samples g = 0.
+Proof. intros. cbn. reflexivity. Qed.
+
+Lemma Rmax_list_nonneg :
+  forall init l, 0 <= init -> 0 <= Rmax_list init l.
+Proof.
+  intros init l Hi. eapply Rle_trans; [exact Hi|].
+  apply Rmax_list_init_le.
+Qed.
+
+Lemma expect_uniform_t_nonneg :
+  forall {A : Type} (samples : list A) (f : A -> R),
+    (forall x, In x samples -> 0 <= f x) ->
+    0 <= expect_uniform_t samples f.
+Proof.
+  intros A samples f Hf. unfold expect_uniform_t.
+  destruct (Nat.eqb_spec (length samples) 0) as [_|Hne]; [lra|].
+  apply Rmult_le_pos.
+  - apply fold_right_Rplus_nonneg_local.
+    intros x Hx. apply in_map_iff in Hx as [y [Heq Hy]].
+    subst x. apply Hf. assumption.
+  - left. apply Rinv_0_lt_compat. apply lt_0_INR. lia.
+Qed.
+
+Theorem emp_rademacher_nonneg :
+  forall samples G, 0 <= emp_rademacher samples G.
+Proof.
+  intros samples G. unfold emp_rademacher.
+  apply expect_uniform_t_nonneg.
+  intros sigma _. apply Rmax_list_nonneg. apply Rle_refl.
+Qed.
+
+Local Close Scope R_scope.
