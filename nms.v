@@ -5547,6 +5547,119 @@ Proof.
     apply pair_violation_nonneg.
 Qed.
 
+(** ** Smooth (squared-hinge) surrogate for [L_separated].
+
+    The L1-hinge [L_separated] has a kink at the margin boundary,
+    blocking standard SGD analysis (gradient discontinuous). The
+    squared-hinge variant [pair_violation_sq] replaces each
+    [Rmax 0 (...)] term with its square: smooth, with continuous
+    gradient. The same zero-locus correspondence holds: the squared
+    sum vanishes iff every pair satisfies [Separated 1]. With the
+    gradient computable explicitly (subgradient at the kink coincides
+    with both branches) and bounded second-derivative, the squared
+    surrogate plugs directly into [SGDDescent]'s
+    [quadratic_upper_bound] hypothesis. *)
+
+Local Open Scope R_scope.
+
+Definition pair_violation_sq
+    {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+    (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+    (m : R) (d d' : @det Box) : R :=
+  if det_eq_dec box_eq_dec_l d d' then 0
+  else if Nat.leb tau (iou (box d) (box d')) then
+    let s := INR (score d) in
+    let s' := INR (score d') in
+    let lower := Rmin s s' in
+    let upper := Rmax s s' in
+    (Rmax 0 (m - (upper - lower)))^2 + (Rmax 0 (lower - INR theta + 1))^2
+  else 0.
+
+Lemma pair_violation_sq_nonneg :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (m : R) (d d' : @det Box),
+    0 <= pair_violation_sq iou tau theta box_eq_dec_l m d d'.
+Proof.
+  intros Box iou tau theta box_eq_dec_l m d d'.
+  unfold pair_violation_sq.
+  destruct (det_eq_dec box_eq_dec_l d d'); [apply Rle_refl|].
+  destruct (Nat.leb tau (iou (box d) (box d'))); [|apply Rle_refl].
+  apply Rplus_le_le_0_compat;
+    pose proof (Rmax_l 0 (m - (Rmax (INR (score d)) (INR (score d'))
+                                - Rmin (INR (score d)) (INR (score d'))))) as H1;
+    pose proof (Rmax_l 0 (Rmin (INR (score d)) (INR (score d')) -
+                          INR theta + 1)) as H2;
+    [pose proof (Rle_0_sqr (Rmax 0 (m - (Rmax (INR (score d)) (INR (score d')) -
+                                          Rmin (INR (score d)) (INR (score d')))))) as Hsq;
+     unfold Rsqr in Hsq; nra
+    |pose proof (Rle_0_sqr (Rmax 0 (Rmin (INR (score d)) (INR (score d')) -
+                                     INR theta + 1))) as Hsq;
+     unfold Rsqr in Hsq; nra].
+Qed.
+
+Definition L_separated_sq
+    {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+    (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+    (m : R) (D : list (@det Box)) : R :=
+  fold_right Rplus 0
+    (flat_map (fun d =>
+                 map (fun d' =>
+                        pair_violation_sq iou tau theta box_eq_dec_l m d d') D)
+              D).
+
+Lemma L_separated_sq_nonneg :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (m : R) (D : list (@det Box)),
+    0 <= L_separated_sq iou tau theta box_eq_dec_l m D.
+Proof.
+  intros Box iou tau theta box_eq_dec_l m D.
+  unfold L_separated_sq.
+  apply fold_right_Rplus_nonneg.
+  intros x Hx. apply in_flat_map in Hx as [d [_ Hd]].
+  apply in_map_iff in Hd as [d' [Heq _]]. subst x.
+  apply pair_violation_sq_nonneg.
+Qed.
+
+Lemma pair_violation_sq_zero_iff :
+  forall {Box : Type} (iou : Box -> Box -> nat) (tau theta : nat)
+         (box_eq_dec_l : forall b1 b2 : Box, {b1 = b2} + {b1 <> b2})
+         (m : R) (d d' : @det Box),
+    pair_violation_sq iou tau theta box_eq_dec_l m d d' = 0 <->
+    pair_violation iou tau theta box_eq_dec_l m d d' = 0.
+Proof.
+  intros Box iou tau theta box_eq_dec_l m d d'.
+  unfold pair_violation_sq, pair_violation.
+  destruct (det_eq_dec box_eq_dec_l d d'); [split; reflexivity|].
+  destruct (Nat.leb tau (iou (box d) (box d'))); [|split; reflexivity].
+  set (s := INR (score d)).
+  set (s' := INR (score d')).
+  set (lower := Rmin s s').
+  set (upper := Rmax s s').
+  set (a := Rmax 0 (m - (upper - lower))).
+  set (b := Rmax 0 (lower - INR theta + 1)).
+  pose proof (Rmax_l 0 (m - (upper - lower))) as Ha. fold a in Ha.
+  pose proof (Rmax_l 0 (lower - INR theta + 1)) as Hb. fold b in Hb.
+  split.
+  - intros Hsum.
+    assert (Hsq_a : 0 <= a^2) by (pose proof (Rle_0_sqr a); unfold Rsqr in *; nra).
+    assert (Hsq_b : 0 <= b^2) by (pose proof (Rle_0_sqr b); unfold Rsqr in *; nra).
+    assert (Ha_zero : a^2 = 0) by lra.
+    assert (Hb_zero : b^2 = 0) by lra.
+    assert (Ha0 : a = 0).
+    { pose proof (Rsqr_0_uniq a). unfold Rsqr in H. apply H. nra. }
+    assert (Hb0 : b = 0).
+    { pose proof (Rsqr_0_uniq b). unfold Rsqr in H. apply H. nra. }
+    lra.
+  - intros Hsum.
+    assert (Ha0 : a = 0) by lra.
+    assert (Hb0 : b = 0) by lra.
+    rewrite Ha0, Hb0. lra.
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Real-valued gradient descent convergence.
 
     Single-parameter SGD analysis built from primitives in
