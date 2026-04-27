@@ -3136,6 +3136,12 @@ Qed.
 From Stdlib Require Import Extraction.
 Extraction Language OCaml.
 Set Extraction Optimize.
+(* [Set Extraction AccessOpaque] permits extraction to traverse [Qed]-opaque
+   proof terms when needed for compilation. The certifier extraction at the
+   end of this file uses this for [Separated_dec], whose computational
+   content lives inside an opaque correctness proof. The extracted OCaml
+   matches the algorithmic intent; readers should be aware that [.ml]
+   output is extraction-with-opaque-bodies, not pure code extraction. *)
 Set Extraction AccessOpaque.
 
 Extract Inductive bool => "bool" [ "true" "false" ].
@@ -9873,6 +9879,152 @@ Section DPMatching.
   Qed.
 
 End DPMatching.
+
+Local Close Scope R_scope.
+
+(** ******************************************************************** *)
+(** *  Part XXIII. LP duality for balanced bipartite assignment           *)
+(** ******************************************************************** *)
+
+(** Closes the LP-duality blocker that gates strict-polynomial-time
+    Hungarian. The classical assignment-LP duality says that a perfect
+    matching [M] is optimal whenever there exist potentials [u : Box -> R]
+    and [v : GT -> R] such that
+
+      (a) dual feasibility:           u_b + v_g >= cost b g  for all b, g
+      (b) complementary slackness:    u_b + v_g = cost b g   for all (b,g) in M
+
+    Given these, [M] dominates every perfect matching by the elementary
+    sum-of-potentials argument:
+
+      weight(M)  = sum_{(b,g) in M} cost b g
+                 = sum_{(b,g) in M} (u_b + v_g)              (by (b))
+                 = sum_b u_b + sum_g v_g                      (M is perfect)
+
+      weight(M') <= sum_{(b,g) in M'} (u_b + v_g)            (by (a))
+                 = sum_b u_b + sum_g v_g                      (M' is perfect)
+
+    No LP-polytope vertex theory, no unimodularity, no Berge's theorem
+    on the equality subgraph — just elementary sum manipulation under
+    a perfect-matching hypothesis encoded as Permutations.
+
+    Theorems delivered:
+
+      Theorem 1.  hungarian_optimal_via_duality
+                  — perfect matching M with dual-feasible /
+                    complementary-slack (u, v) is optimal among
+                    perfect matchings. *)
+
+Local Open Scope R_scope.
+
+Section AssignmentDuality.
+  Variable Box GT : Type.
+  Variable cost : Box -> GT -> R.
+
+  Definition list_sum_R {A : Type} (f : A -> R) (l : list A) : R :=
+    fold_right (fun x acc => f x + acc) 0 l.
+
+  Lemma list_sum_R_app :
+    forall {A : Type} (f : A -> R) (l1 l2 : list A),
+      list_sum_R f (l1 ++ l2) = list_sum_R f l1 + list_sum_R f l2.
+  Proof.
+    intros A f l1 l2. unfold list_sum_R.
+    induction l1 as [|x rest IH]; simpl; [lra|].
+    rewrite IH. lra.
+  Qed.
+
+  Lemma list_sum_R_perm :
+    forall {A : Type} (f : A -> R) (l l' : list A),
+      Permutation l l' -> list_sum_R f l = list_sum_R f l'.
+  Proof.
+    intros A f l l' Hperm.
+    induction Hperm; simpl; try reflexivity.
+    - simpl. unfold list_sum_R in *. simpl. rewrite IHHperm. reflexivity.
+    - simpl. unfold list_sum_R. simpl. lra.
+    - rewrite IHHperm1. exact IHHperm2.
+  Qed.
+
+  Lemma list_sum_R_le :
+    forall {A : Type} (f g : A -> R) (l : list A),
+      (forall x, In x l -> f x <= g x) ->
+      list_sum_R f l <= list_sum_R g l.
+  Proof.
+    intros A f g l Hle. unfold list_sum_R.
+    induction l as [|x rest IH]; simpl; [apply Rle_refl|].
+    apply Rplus_le_compat.
+    - apply Hle. left. reflexivity.
+    - apply IH. intros y Hy. apply Hle. right. assumption.
+  Qed.
+
+  Lemma list_sum_R_eq :
+    forall {A : Type} (f g : A -> R) (l : list A),
+      (forall x, In x l -> f x = g x) ->
+      list_sum_R f l = list_sum_R g l.
+  Proof.
+    intros A f g l Heq. unfold list_sum_R.
+    induction l as [|x rest IH]; simpl; [reflexivity|].
+    rewrite (Heq x (or_introl eq_refl)).
+    rewrite (IH (fun y Hy => Heq y (or_intror Hy))).
+    reflexivity.
+  Qed.
+
+  Lemma list_sum_R_split_pair :
+    forall (M : list (Box * GT)) (u : Box -> R) (v : GT -> R),
+      list_sum_R (fun p => u (fst p) + v (snd p)) M =
+      list_sum_R u (map fst M) + list_sum_R v (map snd M).
+  Proof.
+    intros M u v. unfold list_sum_R.
+    induction M as [|p rest IH]; simpl; [lra|].
+    rewrite IH. lra.
+  Qed.
+
+  Lemma matching_weight_eq_list_sum :
+    forall (M : list (Box * GT)),
+      matching_weight cost M = list_sum_R (fun p => cost (fst p) (snd p)) M.
+  Proof.
+    intros M. unfold matching_weight, list_sum_R.
+    induction M as [|p rest IH]; simpl; [reflexivity|].
+    rewrite IH. reflexivity.
+  Qed.
+
+  (** ** LP-duality optimality theorem for balanced assignment. *)
+
+  Theorem hungarian_optimal_via_duality :
+    forall (boxes : list Box) (gts : list GT)
+           (M : list (Box * GT)) (u : Box -> R) (v : GT -> R),
+      Permutation (map fst M) boxes ->
+      Permutation (map snd M) gts ->
+      (forall b g, In b boxes -> In g gts -> u b + v g >= cost b g) ->
+      (forall b g, In (b, g) M -> u b + v g = cost b g) ->
+      forall M',
+        Permutation (map fst M') boxes ->
+        Permutation (map snd M') gts ->
+        matching_weight cost M' <= matching_weight cost M.
+  Proof.
+    intros boxes gts M u v Hbox Hgt Hfeas Hslack M' Hbox' Hgt'.
+    rewrite !matching_weight_eq_list_sum.
+    assert (HsumM : list_sum_R (fun p => cost (fst p) (snd p)) M =
+                    list_sum_R u boxes + list_sum_R v gts).
+    { rewrite (list_sum_R_eq _ (fun p => u (fst p) + v (snd p))).
+      - rewrite list_sum_R_split_pair.
+        rewrite (list_sum_R_perm u Hbox).
+        rewrite (list_sum_R_perm v Hgt). reflexivity.
+      - intros [b g] Hin. simpl. symmetry. apply Hslack. assumption. }
+    rewrite HsumM.
+    apply Rle_trans with
+      (list_sum_R (fun p => u (fst p) + v (snd p)) M').
+    - apply list_sum_R_le. intros [b g] Hin. simpl.
+      assert (Hb : In b boxes).
+      { apply (Permutation_in b Hbox'). apply (in_map fst M' (b, g) Hin). }
+      assert (Hg : In g gts).
+      { apply (Permutation_in g Hgt'). apply (in_map snd M' (b, g) Hin). }
+      pose proof (Hfeas b g Hb Hg). lra.
+    - rewrite list_sum_R_split_pair.
+      rewrite (list_sum_R_perm u Hbox').
+      rewrite (list_sum_R_perm v Hgt'). apply Rle_refl.
+  Qed.
+
+End AssignmentDuality.
 
 Local Close Scope R_scope.
 
