@@ -8,12 +8,15 @@
 .nia.cache
 .nra.cache
 .Makefile.d
+.Makefile.coq.d
 Makefile.coq
 Makefile.coq.conf
 nms_extracted.ml
 nms_extracted.mli
 nms_cert.ml
 nms_cert.mli
+nms_pipeline.ml
+nms_pipeline.mli
 *.cmi
 *.cmo
 *.cmx
