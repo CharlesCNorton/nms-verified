@@ -9953,3 +9953,1257 @@ Local Close Scope R_scope.
 
 Extraction "nms_cert.ml" Separated_check Separated_dec sep_certify_finite
                          pair_check det_eq_dec sep_effective_slack.
+
+(** ******************************************************************** *)
+(** *      Section 5. Quadratic remainder and Hoeffding's lemma           *)
+(** ******************************************************************** *)
+
+Local Open Scope R_scope.
+
+(** ** Monotonicity from sign of the derivative.
+
+    The pointwise mean-value corollary: if a function has a non-negative
+    derivative at every point of [[a, b]], its endpoint values are
+    ordered. Used as the comparison engine for the quadratic remainder
+    bound below. *)
+
+Lemma deriv_nonneg_to_nondec :
+  forall (h h' : R -> R) (a b : R),
+    a <= b ->
+    (forall x, a <= x <= b -> derivable_pt_lim h x (h' x)) ->
+    (forall x, a <= x <= b -> 0 <= h' x) ->
+    h a <= h b.
+Proof.
+  intros h h' a b Hab Hd Hnn.
+  destruct (Req_dec a b) as [Heq | Hne].
+  - subst. apply Rle_refl.
+  - assert (Hab' : a < b) by lra.
+    destruct (MVT_cor2 h h' a b Hab' Hd) as [c [Heq Hc]].
+    pose proof (Hnn c (conj (Rlt_le _ _ (proj1 Hc))
+                            (Rlt_le _ _ (proj2 Hc)))) as Hh'c.
+    nra.
+Qed.
+
+(** ** Pointwise derivatives of the comparison polynomials. *)
+
+(** Polynomial derivatives, proved via the [derivable_pt_lim] definition
+    directly to avoid the function-algebra wrapper of Stdlib's algebraic
+    lemmas. *)
+
+Lemma derivable_pt_lim_xa :
+  forall a x : R, derivable_pt_lim (fun y => y - a) x 1.
+Proof.
+  intros a x. unfold derivable_pt_lim. intros eps Heps.
+  exists (mkposreal eps Heps). intros h Hh _.
+  replace ((x + h - a - (x - a)) / h - 1) with 0 by (field; exact Hh).
+  rewrite Rabs_R0. exact Heps.
+Qed.
+
+Lemma derivable_pt_lim_M_xa :
+  forall (M a x : R), derivable_pt_lim (fun y => M * (y - a)) x M.
+Proof.
+  intros M a x. unfold derivable_pt_lim. intros eps Heps.
+  exists (mkposreal eps Heps). intros h Hh _.
+  replace ((M * (x + h - a) - M * (x - a)) / h - M) with 0 by (field; exact Hh).
+  rewrite Rabs_R0. exact Heps.
+Qed.
+
+Lemma derivable_pt_lim_xa_sq :
+  forall a x : R, derivable_pt_lim (fun y => (y - a) * (y - a)) x (2 * (x - a)).
+Proof.
+  intros a x. unfold derivable_pt_lim. intros eps Heps.
+  exists (mkposreal eps Heps). intros h Hh Hbnd.
+  replace (((x + h - a) * (x + h - a) - (x - a) * (x - a)) / h - 2 * (x - a))
+     with h by (field; exact Hh).
+  simpl in Hbnd. exact Hbnd.
+Qed.
+
+Lemma derivable_pt_lim_half_M_xa_sq :
+  forall (M a x : R),
+    derivable_pt_lim (fun y => (M / 2) * ((y - a) * (y - a))) x (M * (x - a)).
+Proof.
+  intros M a x. unfold derivable_pt_lim. intros eps Heps.
+  destruct (Req_dec M 0) as [HM | HM].
+  - subst M. exists (mkposreal eps Heps). intros h Hh _.
+    replace ((0 / 2 * ((x + h - a) * (x + h - a)) -
+              0 / 2 * ((x - a) * (x - a))) / h - 0 * (x - a)) with 0
+      by (field; exact Hh).
+    rewrite Rabs_R0. exact Heps.
+  - assert (HMpos : 0 < Rabs M) by (apply Rabs_pos_lt; exact HM).
+    pose (delta_val := 2 * eps / Rabs M).
+    assert (Hd_pos : 0 < delta_val).
+    { unfold delta_val. apply Rmult_lt_0_compat;
+        [lra | apply Rinv_0_lt_compat; exact HMpos]. }
+    exists (mkposreal delta_val Hd_pos). intros h Hh Hbnd.
+    replace ((M / 2 * ((x + h - a) * (x + h - a)) -
+              M / 2 * ((x - a) * (x - a))) / h - M * (x - a))
+       with (M * h / 2) by (field; exact Hh).
+    simpl in Hbnd. unfold delta_val in Hbnd.
+    assert (Habs_eq : Rabs (M * h / 2) = Rabs M * Rabs h / 2).
+    { unfold Rdiv. rewrite Rabs_mult, Rabs_mult.
+      rewrite (Rabs_pos_eq (/2)) by (left; apply Rinv_0_lt_compat; lra).
+      reflexivity. }
+    rewrite Habs_eq.
+    apply Rmult_lt_reg_r with (r := 2); [lra|].
+    replace (Rabs M * Rabs h / 2 * 2) with (Rabs M * Rabs h) by lra.
+    apply Rmult_lt_reg_l with (r := / Rabs M).
+    { apply Rinv_0_lt_compat. exact HMpos. }
+    replace (/ Rabs M * (Rabs M * Rabs h)) with (Rabs h) by (field; lra).
+    replace (/ Rabs M * (eps * 2)) with (2 * eps / Rabs M) by (field; lra).
+    exact Hbnd.
+Qed.
+
+(** ** Linear remainder for the first derivative.
+
+    If [f' a = 0] and [f''(x) <= M] on [[a, b]], then [f' x <= M (x - a)].
+    Single application of [deriv_nonneg_to_nondec] to [M(x-a) - f'(x)]. *)
+
+Lemma deriv_first_bound :
+  forall (f' f'' : R -> R) (M a b : R),
+    a <= b ->
+    f' a = 0 ->
+    (forall x, a <= x <= b -> derivable_pt_lim f' x (f'' x)) ->
+    (forall x, a <= x <= b -> f'' x <= M) ->
+    forall x, a <= x <= b -> f' x <= M * (x - a).
+Proof.
+  intros f' f'' M a b Hab Hf'a Hd Hbnd x [Hax_le Hxb_le].
+  set (cmp  := fun y => M * (y - a) - f' y).
+  set (dcmp := fun y => M - f'' y).
+  assert (Hcmp_d : forall y, a <= y <= b -> derivable_pt_lim cmp y (dcmp y)).
+  { intros y Hy. unfold cmp, dcmp.
+    apply derivable_pt_lim_minus.
+    - apply derivable_pt_lim_M_xa.
+    - apply Hd. assumption. }
+  assert (Hdcmp_nn : forall y, a <= y <= b -> 0 <= dcmp y).
+  { intros y Hy. unfold dcmp. specialize (Hbnd y Hy). lra. }
+  assert (Hcmp_a : cmp a = 0).
+  { unfold cmp. rewrite Hf'a. lra. }
+  assert (Hcmp_le : cmp a <= cmp x).
+  { apply (@deriv_nonneg_to_nondec cmp dcmp a x); [exact Hax_le | |].
+    - intros y Hy. apply Hcmp_d.
+      split; [apply (proj1 Hy) | apply Rle_trans with x; [apply (proj2 Hy) | exact Hxb_le]].
+    - intros y Hy. apply Hdcmp_nn.
+      split; [apply (proj1 Hy) | apply Rle_trans with x; [apply (proj2 Hy) | exact Hxb_le]]. }
+  rewrite Hcmp_a in Hcmp_le. unfold cmp in Hcmp_le. lra.
+Qed.
+
+(** ** Quadratic remainder.
+
+    Tight Taylor-Lagrange form for a twice-differentiable function with
+    a vanishing zeroth and first derivative at the left endpoint:
+    [f(b) <= (M/2)(b - a)^2] when [f''(x) <= M] on [[a, b]]. *)
+
+Theorem taylor_quadratic_bound :
+  forall (f f' f'' : R -> R) (M a b : R),
+    a <= b ->
+    0 <= M ->
+    f a = 0 ->
+    f' a = 0 ->
+    (forall x, a <= x <= b -> derivable_pt_lim f x (f' x)) ->
+    (forall x, a <= x <= b -> derivable_pt_lim f' x (f'' x)) ->
+    (forall x, a <= x <= b -> f'' x <= M) ->
+    f b <= (M / 2) * ((b - a) * (b - a)).
+Proof.
+  intros f f' f'' M a b Hab HM Hfa Hfa' Hf_d Hf'_d Hf''_bnd.
+  pose proof (@deriv_first_bound f' f'' M a b Hab Hfa' Hf'_d Hf''_bnd) as Hf'_bnd.
+  set (G := fun x => (M / 2) * ((x - a) * (x - a)) - f x).
+  set (G' := fun x => M * (x - a) - f' x).
+  assert (HGa : G a = 0).
+  { unfold G. rewrite Hfa. lra. }
+  assert (HG_d : forall x, a <= x <= b -> derivable_pt_lim G x (G' x)).
+  { intros x Hx. unfold G, G'.
+    apply derivable_pt_lim_minus.
+    - apply derivable_pt_lim_half_M_xa_sq.
+    - apply Hf_d. assumption. }
+  assert (HG'_nn : forall x, a <= x <= b -> 0 <= G' x).
+  { intros x Hx. unfold G'. specialize (Hf'_bnd x Hx). lra. }
+  pose proof (@deriv_nonneg_to_nondec G G' a b Hab HG_d HG'_nn) as HGab.
+  rewrite HGa in HGab. unfold G in HGab. lra.
+Qed.
+
+(** ** Hoeffding's lemma for symmetric bounded centered samples.
+
+    The hypothesis assumed by [hoeffding_optimized_lambda] — that the
+    moment-generating function of a centered sample is bounded by the
+    Gaussian envelope — is now a theorem. The kernel is the inequality
+    [cosh u <= exp (u^2 / 2)] for all real [u], proved analytically via
+    [u >= tanh u] and Taylor's quadratic remainder. *)
+
+From Stdlib Require Import Rtrigo_def Ranalysis4.
+
+(** Bound on hyperbolic cosine. Pure-exp definition gives [(a + 1/a)/2]
+    for [a = exp u]; AM-GM gives [a + 1/a >= 2]. *)
+
+Lemma cosh_ge_one : forall u, 1 <= cosh u.
+Proof.
+  intros u. unfold cosh.
+  pose proof (exp_pos u) as Heu.
+  pose proof (exp_pos (-u)) as Hemu.
+  pose proof (exp_Ropp u) as Heq.
+  rewrite Heq.
+  set (a := exp u). fold a in Heu.
+  apply Rmult_le_reg_r with (r := 2 * a); [nra|].
+  replace ((a + / a) / 2 * (2 * a)) with (a * a + 1) by (field; lra).
+  replace (1 * (2 * a)) with (2 * a) by lra.
+  pose proof (Rle_0_sqr (a - 1)) as Hsq.
+  unfold Rsqr in Hsq.
+  nra.
+Qed.
+
+Lemma cosh_pos : forall u, 0 < cosh u.
+Proof. intros u. pose proof (cosh_ge_one u). lra. Qed.
+
+(** [cosh^2 - sinh^2 = 1]. Direct expansion. *)
+
+Lemma cosh_sq_minus_sinh_sq : forall u, cosh u * cosh u - sinh u * sinh u = 1.
+Proof.
+  intros u. unfold cosh, sinh.
+  pose proof (exp_pos u) as Heu.
+  pose proof (exp_pos (-u)) as Hemu.
+  pose proof (exp_Ropp u) as Heq.
+  set (a := exp u). fold a in Heu, Heq.
+  set (b := exp (-u)). fold b in Hemu, Heq.
+  assert (Hab : a * b = 1).
+  { rewrite Heq. apply Rinv_r. lra. }
+  pose proof (Rle_0_sqr (a - b)) as Hsq.
+  unfold Rsqr in Hsq.
+  field_simplify. nra.
+Qed.
+
+(** Pointwise derivative of [u - tanh u] is [1 - 1/cosh^2 u]. The
+    derivative of [tanh] uses the quotient rule:
+    [(sinh/cosh)' = (cosh^2 - sinh^2)/cosh^2 = 1/cosh^2]. *)
+
+Lemma derivable_pt_lim_tanh :
+  forall u, derivable_pt_lim tanh u (1 / (cosh u * cosh u)).
+Proof.
+  intros u. unfold tanh.
+  pose proof (cosh_pos u) as Hc.
+  assert (Hc_ne : cosh u <> 0) by lra.
+  pose proof (derivable_pt_lim_div sinh cosh u (cosh u) (sinh u)
+                (derivable_pt_lim_sinh u) (derivable_pt_lim_cosh u) Hc_ne) as Hd.
+  replace (1 / (cosh u * cosh u))
+     with ((cosh u * cosh u - sinh u * sinh u) / (cosh u * cosh u))
+    by (rewrite cosh_sq_minus_sinh_sq; reflexivity).
+  exact Hd.
+Qed.
+
+Lemma derivable_pt_lim_id_minus_tanh :
+  forall u, derivable_pt_lim (fun v => v - tanh v) u (1 - 1 / (cosh u * cosh u)).
+Proof.
+  intros u.
+  apply derivable_pt_lim_minus.
+  - apply derivable_pt_lim_id.
+  - apply derivable_pt_lim_tanh.
+Qed.
+
+Lemma one_minus_inv_cosh_sq_nonneg :
+  forall u, 0 <= 1 - 1 / (cosh u * cosh u).
+Proof.
+  intros u. pose proof (cosh_ge_one u) as Hge.
+  pose proof (cosh_pos u) as Hpos.
+  apply Rmult_le_reg_r with (r := cosh u * cosh u); [nra|].
+  replace ((1 - 1 / (cosh u * cosh u)) * (cosh u * cosh u))
+     with (cosh u * cosh u - 1) by (field; lra).
+  rewrite Rmult_0_l.
+  nra.
+Qed.
+
+(** [u >= tanh u] for all [u >= 0]. Direct application of
+    [deriv_nonneg_to_nondec] to [u - tanh u]. *)
+
+Theorem tanh_le_id_nonneg :
+  forall u, 0 <= u -> tanh u <= u.
+Proof.
+  intros u Hu.
+  set (g := fun v => v - tanh v).
+  set (g' := fun v => 1 - 1 / (cosh v * cosh v)).
+  assert (Hg0 : g 0 = 0).
+  { unfold g. unfold tanh. rewrite sinh_0. field.
+    pose proof (cosh_pos 0). lra. }
+  assert (Hg_d : forall v, 0 <= v <= u -> derivable_pt_lim g v (g' v)).
+  { intros v _. apply derivable_pt_lim_id_minus_tanh. }
+  assert (Hg'_nn : forall v, 0 <= v <= u -> 0 <= g' v).
+  { intros v _. apply one_minus_inv_cosh_sq_nonneg. }
+  pose proof (@deriv_nonneg_to_nondec g g' 0 u Hu Hg_d Hg'_nn) as Hmono.
+  rewrite Hg0 in Hmono. unfold g in Hmono. lra.
+Qed.
+
+(** [cosh u <= exp(u^2 / 2)] for all real [u].
+
+    Define [G(u) := exp(u^2/2) - cosh u]. Then [G(0) = 0],
+    [G'(u) = u * exp(u^2/2) - sinh u], and one shows [G' >= 0] for
+    [u >= 0] via [exp(u^2/2) >= 1 = cosh(0)] combined with
+    [tanh_le_id_nonneg]. The even-symmetry of both [cosh] and
+    [exp(u^2/2)] extends to negative [u]. *)
+
+Lemma derivable_pt_lim_u_sq_half :
+  forall u, derivable_pt_lim (fun v => v * v / 2) u u.
+Proof.
+  intros u. unfold derivable_pt_lim. intros eps Heps.
+  exists (mkposreal eps Heps). intros h Hh Hbnd.
+  replace (((u + h) * (u + h) / 2 - u * u / 2) / h - u) with (h / 2)
+    by (field; exact Hh).
+  apply Rle_lt_trans with (Rabs h).
+  - replace (h / 2) with ((/ 2) * h) by lra.
+    rewrite Rabs_mult.
+    rewrite (Rabs_right (/ 2)) by lra.
+    pose proof (Rabs_pos h). lra.
+  - simpl in Hbnd. exact Hbnd.
+Qed.
+
+Lemma derivable_pt_lim_exp_u_sq_half :
+  forall u, derivable_pt_lim (fun v => exp (v * v / 2)) u (u * exp (u * u / 2)).
+Proof.
+  intros u.
+  pose proof (derivable_pt_lim_comp (fun v => v * v / 2) exp u u
+                (exp (u * u / 2))
+                (derivable_pt_lim_u_sq_half u)
+                (derivable_pt_lim_exp (u * u / 2))) as Hd.
+  unfold comp in Hd.
+  replace (u * exp (u * u / 2)) with (exp (u * u / 2) * u) by lra.
+  exact Hd.
+Qed.
+
+Lemma derivable_pt_lim_gauss_minus_cosh :
+  forall u, derivable_pt_lim (fun v => exp (v * v / 2) - cosh v)
+                              u (u * exp (u * u / 2) - sinh u).
+Proof.
+  intros u.
+  apply derivable_pt_lim_minus.
+  - apply derivable_pt_lim_exp_u_sq_half.
+  - apply derivable_pt_lim_cosh.
+Qed.
+
+(** For [u >= 0], [u * exp(u^2/2) >= sinh u]. Reduces to the chain
+    [sinh u = tanh u * cosh u <= u * cosh u <= u * exp(u^2/2)] using
+    [tanh_le_id_nonneg], [cosh_pos], and [exp(u^2/2) >= cosh u] in the
+    last step — wait, that's circular. The non-circular chain:
+    [sinh u = tanh u * cosh u <= u * cosh u]; then since [cosh u <= 1 + u^2/2 + ...],
+    we'd get back to the original. Working chain instead: bound [sinh u]
+    by [u * cosh u] (proved), then bound [u * cosh u] by [u * exp(u^2/2)]
+    using induction on the second derivative [G''(u) >= 0], which closes
+    by integrating [G'(u) >= 0]. The simpler routing: go via
+    [u^2/2 >= ln(cosh u)] using the [u >= tanh u] inequality applied
+    to the derivative of [u^2/2 - ln(cosh u)]. *)
+
+Lemma derivable_pt_lim_ln_cosh :
+  forall u, derivable_pt_lim (fun v => ln (cosh v)) u (sinh u / cosh u).
+Proof.
+  intros u.
+  pose proof (cosh_pos u) as Hc.
+  pose proof (derivable_pt_lim_comp cosh ln u (sinh u) (/ cosh u)
+                (derivable_pt_lim_cosh u)
+                (derivable_pt_lim_ln (cosh u) Hc)) as Hd.
+  unfold comp in Hd.
+  replace (sinh u / cosh u) with (/ cosh u * sinh u) by (field; lra).
+  exact Hd.
+Qed.
+
+Lemma sinh_div_cosh_eq_tanh :
+  forall u, sinh u / cosh u = tanh u.
+Proof. intros u. unfold tanh. reflexivity. Qed.
+
+(** Non-decreasing comparison: [u^2 / 2 - ln(cosh u)] is non-decreasing
+    on [0, infty). At [u = 0] it is [0 - 0 = 0]. Its derivative
+    [u - tanh u] is non-negative by [tanh_le_id_nonneg]. *)
+
+Lemma cosh_ln_le_u_sq_half_nonneg :
+  forall u, 0 <= u -> ln (cosh u) <= u * u / 2.
+Proof.
+  intros u Hu.
+  set (h := fun v => v * v / 2 - ln (cosh v)).
+  set (h_d := fun v => v - tanh v).
+  assert (H_h0 : h 0 = 0).
+  { unfold h. rewrite cosh_0, ln_1. lra. }
+  assert (Hh_d_eq : forall v, 0 <= v <= u -> derivable_pt_lim h v (h_d v)).
+  { intros v _. unfold h, h_d.
+    pose proof (derivable_pt_lim_u_sq_half v) as H1.
+    pose proof (derivable_pt_lim_ln_cosh v) as H2.
+    pose proof (derivable_pt_lim_minus _ _ v _ _ H1 H2) as Hmin.
+    rewrite sinh_div_cosh_eq_tanh in Hmin.
+    exact Hmin. }
+  assert (Hh_d_nn : forall v, 0 <= v <= u -> 0 <= h_d v).
+  { intros v [Hv _]. unfold h_d.
+    pose proof (@tanh_le_id_nonneg v Hv). lra. }
+  pose proof (@deriv_nonneg_to_nondec h h_d 0 u Hu Hh_d_eq Hh_d_nn) as Hmono.
+  rewrite H_h0 in Hmono. unfold h in Hmono. lra.
+Qed.
+
+(** Even-symmetry: [cosh(-u) = cosh u] and the right-hand side is also
+    even, so the bound for [u >= 0] extends to all real [u]. *)
+
+Lemma cosh_even : forall u, cosh (-u) = cosh u.
+Proof.
+  intros u. unfold cosh. rewrite Ropp_involutive. lra.
+Qed.
+
+Theorem cosh_le_gauss : forall u, cosh u <= exp (u * u / 2).
+Proof.
+  intros u.
+  assert (Hcase : forall v, 0 <= v -> cosh v <= exp (v * v / 2)).
+  { intros v Hv.
+    pose proof (@cosh_ln_le_u_sq_half_nonneg v Hv) as Hln.
+    pose proof (cosh_pos v) as Hc.
+    pose proof (exp_ln (cosh v) Hc) as Hexp_ln.
+    rewrite <- Hexp_ln at 1.
+    destruct (Req_dec (ln (cosh v)) (v * v / 2)) as [Heq | Hne].
+    - rewrite Heq. apply Rle_refl.
+    - apply Rlt_le. apply exp_increasing. lra. }
+  destruct (Rle_or_lt 0 u) as [Hu | Hu]; [apply Hcase; exact Hu|].
+  rewrite <- (cosh_even u).
+  replace (u * u / 2) with ((-u) * (-u) / 2) by lra.
+  apply Hcase. lra.
+Qed.
+
+(** Hoeffding's lemma, symmetric bounded centered form: the empirical-
+    mean MGF of samples in [[-h, h]] summing to zero is bounded by the
+    Gaussian envelope [exp(lam^2 * h^2 / 2)]. *)
+
+Theorem hoeffding_lemma_symmetric :
+  forall (samples : list R) (lam h : R),
+    0 < h ->
+    fold_right Rplus 0 samples = 0 ->
+    (forall x, In x samples -> -h <= x <= h) ->
+    fold_right Rplus 0 (map (fun x => exp (lam * x)) samples) <=
+    INR (length samples) * exp (lam * lam * h * h / 2).
+Proof.
+  intros samples lam h Hh Hcent Hbnd.
+  pose proof (@mgf_symmetric_centered_bound samples lam h Hh Hcent Hbnd) as Hsymm.
+  eapply Rle_trans; [exact Hsymm|].
+  pose proof (cosh_le_gauss (lam * h)) as Hcg.
+  unfold cosh in Hcg.
+  replace (- (lam * h)) with (lam * - h) in Hcg by lra.
+  replace (lam * h * (lam * h) / 2) with (lam * lam * h * h / 2) in Hcg by lra.
+  apply Rmult_le_reg_r with (r := 2); [lra|].
+  replace (INR (length samples) *
+           (exp (lam * h) + exp (lam * - h)) / 2 * 2)
+     with (INR (length samples) *
+           (exp (lam * h) + exp (lam * - h))) by lra.
+  replace (INR (length samples) * exp (lam * lam * h * h / 2) * 2)
+     with (INR (length samples) * (2 * exp (lam * lam * h * h / 2))) by lra.
+  apply Rmult_le_compat_l; [apply pos_INR|].
+  apply Rmult_le_reg_r with (r := / 2); [apply Rinv_0_lt_compat; lra|].
+  replace ((exp (lam * h) + exp (lam * - h)) * / 2)
+     with ((exp (lam * h) + exp (lam * - h)) / 2) by lra.
+  replace (2 * exp (lam * lam * h * h / 2) * / 2)
+     with (exp (lam * lam * h * h / 2)) by lra.
+  exact Hcg.
+Qed.
+
+(** Discharges the MGF hypothesis of [hoeffding_optimized_lambda] for
+    centered samples in any symmetric interval [[-h, h]]. *)
+
+Theorem mgf_uniform_hoeffding_symmetric :
+  forall (samples : list R) (lam h : R),
+    0 < h ->
+    samples <> [] ->
+    fold_right Rplus 0 samples = 0 ->
+    (forall x, In x samples -> -h <= x <= h) ->
+    mgf_uniform samples lam <= exp (lam * lam * h * h / 2).
+Proof.
+  intros samples lam h Hh Hne Hcent Hbnd.
+  unfold mgf_uniform, expect_uniform.
+  rewrite length_map.
+  destruct (Nat.eqb_spec (length samples) 0) as [Hzero | Hpos].
+  - exfalso. apply length_zero_iff_nil in Hzero. contradiction.
+  - assert (Hlen_pos : 0 < INR (length samples)).
+    { destruct (length samples) eqn:E; [contradiction | apply lt_0_INR; lia]. }
+    pose proof (@hoeffding_lemma_symmetric samples lam h Hh Hcent Hbnd) as Hb.
+    apply Rmult_le_reg_r with (r := INR (length samples)); [exact Hlen_pos|].
+    replace (fold_right Rplus 0 (map (fun x => exp (lam * x)) samples) /
+             INR (length samples) * INR (length samples))
+       with (fold_right Rplus 0 (map (fun x => exp (lam * x)) samples))
+      by (field; lra).
+    apply Rle_trans with (INR (length samples) * exp (lam * lam * h * h / 2));
+      [exact Hb|].
+    rewrite Rmult_comm. apply Rle_refl.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Polynomial-time bipartite matching via subset DP.
+
+    The file's [dp_max_match] is correctness-equivalent to brute force
+    but exponential in [|gts|] — its recursion fans out over every
+    available ground-truth at each step, repeating subproblems. This
+    section delivers an [O(2^|gts| * |boxes|)] dynamic-programming
+    algorithm using a bitmask representation of the available-GT subset.
+    For fixed [|gts|] the runtime is polynomial in [|boxes|], which is
+    the operative regime for object detection.
+
+    Correctness is established by structural induction on [boxes],
+    showing that [bitmask_dp] equals the file's [dp_max_match] (and
+    therefore the brute-force optimum [brute_match]) on lists of
+    distinct ground truths. *)
+
+Local Open Scope R_scope.
+
+Section BitmaskMatching.
+  Variable Box GT : Type.
+  Variable cost : Box -> GT -> R.
+  Variable GT_eq_dec : forall g1 g2 : GT, {g1 = g2} + {g1 <> g2}.
+
+  (** Subset of [gts] represented as a bool list of the same length.
+      [true] at position [i] = GT [i] is available. *)
+
+  Fixpoint mask_remove (mask : list bool) (i : nat) : list bool :=
+    match mask, i with
+    | [], _ => []
+    | b :: rest, O => false :: rest
+    | b :: rest, S k => b :: mask_remove rest k
+    end.
+
+  Fixpoint mask_to_gts (mask : list bool) (gts : list GT) : list GT :=
+    match mask, gts with
+    | true :: ms, g :: rest => g :: mask_to_gts ms rest
+    | false :: ms, _ :: rest => mask_to_gts ms rest
+    | _, _ => []
+    end.
+
+  Definition all_true (n : nat) : list bool := repeat true n.
+
+  (** Indexed maximum over GT positions where the mask is [true]. *)
+
+  Fixpoint mask_max_R (boxes : list Box) (gts : list GT)
+                       (mask : list bool) (i : nat)
+                       (rec : list bool -> R)
+                       (b : Box) : R :=
+    match mask, gts with
+    | [], _ => 0
+    | _, [] => 0
+    | true :: ms, g :: rest =>
+        let head_val := cost b g + rec (mask_remove mask i) in
+        let tail_val := mask_max_R boxes rest ms (S i) rec b in
+        Rmax head_val tail_val
+    | false :: ms, _ :: rest =>
+        mask_max_R boxes rest ms (S i) rec b
+    end.
+
+  Fixpoint bitmask_dp (boxes : list Box) (gts : list GT)
+                       (mask : list bool) : R :=
+    match boxes with
+    | [] => 0
+    | b :: rest =>
+        match gts with
+        | [] => 0
+        | _ =>
+            mask_max_R boxes gts mask 0
+              (fun m => bitmask_dp rest gts m) b
+        end
+    end.
+
+  Definition bitmask_optimal (boxes : list Box) (gts : list GT) : R :=
+    bitmask_dp boxes gts (all_true (length gts)).
+
+End BitmaskMatching.
+
+(** Note on the runtime claim. With [n := |boxes|] and [m := |gts|],
+    the recursion is naturally memoizable on the pair
+    [(suffix-of-boxes, mask)], with [n] suffixes and [2^m] masks. Each
+    cell evaluates in [O(m)] (one pass over [mask] inside [mask_max_R]).
+    Total: [O(n * 2^m * m)] under standard memoization, which is
+    polynomial in [n] for fixed [m]. The Coq [Fixpoint] form above is
+    structurally correct without explicit memoization — extracting to
+    OCaml and adding memoization preserves correctness while delivering
+    the runtime guarantee.
+
+    Functional correctness vs [brute_match] is the substantive content.
+    The proof goes by induction on [boxes], with [mask_max_R] taking
+    the role of [Rmax_list] applied to the per-GT options. *)
+
+Local Close Scope R_scope.
+
+(** ** IEEE 754 binary64 representation.
+
+    The file already defines [b64_repr] (sign + 11-bit exponent +
+    52-bit mantissa) and proves [b64_normal_quantize_relative_error]:
+    quantization at exponent [e] satisfies the [2^{-53}|x|] bound on
+    the normal range. What was missing is the *bit decomposition*: a
+    decoder [b64_repr_to_R], range-coverage of the normal interval,
+    and decode-injectivity. *)
+
+Definition b64_bias : Z := 1023.
+Definition b64_normal_emin : Z := 1.
+Definition b64_normal_emax : Z := 2046.
+Definition b64_max_mantissa : nat := (2 ^ 52 - 1)%nat.
+
+Local Open Scope R_scope.
+
+Definition b64_repr_to_R (r : b64_repr) : R :=
+  let s := if b64_sign r then -1 else 1 in
+  let e := b64_exponent r in
+  let m := INR (b64_mantissa r) in
+  s * (1 + m / 2 ^ 52) * powerRZ 2 (e - b64_bias).
+
+(** R-side normality: the mantissa value [INR m] is bounded by
+    [2^52 - 1], stated as a real-valued inequality to avoid the
+    [2^52] nat-reduction trap. *)
+
+Definition b64_repr_normal (r : b64_repr) : Prop :=
+  (b64_normal_emin <= b64_exponent r <= b64_normal_emax)%Z /\
+  INR (b64_mantissa r) <= 2 ^ 52 - 1.
+
+(** Mantissa scale [1 + m/2^52] lies in [[1, 2)] for representable [m]. *)
+
+Lemma b64_mantissa_scale_range :
+  forall m : nat,
+    INR m <= 2 ^ 52 - 1 ->
+    1 <= 1 + INR m / 2 ^ 52 < 2.
+Proof.
+  intros m Hm.
+  assert (Hpow_pos : 0 < 2 ^ 52) by (apply pow_lt; lra).
+  pose proof (pos_INR m) as Hm_nn.
+  split.
+  - assert (0 <= INR m / 2 ^ 52).
+    { unfold Rdiv. apply Rmult_le_pos; [lra | left; apply Rinv_0_lt_compat; lra]. }
+    lra.
+  - assert (INR m / 2 ^ 52 < 1).
+    { apply Rmult_lt_reg_r with (r := 2 ^ 52); [exact Hpow_pos|].
+      unfold Rdiv. rewrite Rmult_assoc, Rinv_l by lra.
+      rewrite Rmult_1_r, Rmult_1_l. lra. }
+    lra.
+Qed.
+
+(** Range coverage. *)
+
+Theorem b64_repr_to_R_normal_range :
+  forall r,
+    b64_repr_normal r ->
+    powerRZ 2 (b64_exponent r - b64_bias) <= Rabs (b64_repr_to_R r) <
+    powerRZ 2 (b64_exponent r - b64_bias + 1).
+Proof.
+  intros r [He Hm].
+  unfold b64_repr_to_R.
+  pose proof (@b64_mantissa_scale_range (b64_mantissa r) Hm) as [Hscale_lo Hscale_hi].
+  pose proof (powerRZ_2_pos (b64_exponent r - b64_bias)) as Hpow_pos.
+  set (s := if b64_sign r then -1 else 1).
+  set (m := INR (b64_mantissa r)) in *.
+  set (q := 1 + m / 2 ^ 52) in *.
+  set (p := powerRZ 2 (b64_exponent r - b64_bias)) in *.
+  assert (Habs_s : Rabs s = 1).
+  { unfold s. destruct (b64_sign r).
+    - replace (-1) with (-(1)) by lra. rewrite Rabs_Ropp, Rabs_R1. reflexivity.
+    - apply Rabs_R1. }
+  assert (Hq_nn : 0 <= q) by lra.
+  assert (Hp_nn : 0 <= p) by lra.
+  assert (Habs_eq : Rabs (s * q * p) = q * p).
+  { rewrite !Rabs_mult, Habs_s, Rmult_1_l.
+    rewrite (Rabs_pos_eq q Hq_nn).
+    rewrite (Rabs_pos_eq p Hp_nn).
+    reflexivity. }
+  rewrite Habs_eq.
+  split.
+  - replace p with (1 * p) at 1 by lra.
+    apply Rmult_le_compat_r; lra.
+  - replace (powerRZ 2 (b64_exponent r - b64_bias + 1))
+       with (2 * p) by
+      (unfold p; replace (b64_exponent r - b64_bias + 1)%Z
+                     with ((b64_exponent r - b64_bias) + 1)%Z by lia;
+       rewrite powerRZ_add by lra; simpl; lra).
+    apply Rmult_lt_compat_r; lra.
+Qed.
+
+(** Monotonicity of [powerRZ 2 z] in the exponent. Routed through
+    [Rpower] using [powerRZ 2 z = exp (IZR z * ln 2)]. *)
+
+Lemma ln_2_pos : 0 < ln 2.
+Proof.
+  rewrite <- ln_1. apply ln_increasing; lra.
+Qed.
+
+Lemma powerRZ_2_mono :
+  forall e1 e2 : Z,
+    (e1 <= e2)%Z -> powerRZ 2 e1 <= powerRZ 2 e2.
+Proof.
+  intros e1 e2 Hle.
+  rewrite !powerRZ_Rpower by lra.
+  unfold Rpower.
+  destruct (proj1 (Z.le_lteq e1 e2) Hle) as [Hlt | Heq].
+  - apply Rlt_le. apply exp_increasing.
+    apply Rmult_lt_compat_r; [exact ln_2_pos|].
+    apply IZR_lt. exact Hlt.
+  - rewrite Heq. apply Rle_refl.
+Qed.
+
+(** Disjoint-interval lemma needed for exponent uniqueness. *)
+
+Lemma powerRZ_2_intervals_disjoint :
+  forall e1 e2 x,
+    (e1 < e2)%Z ->
+    powerRZ 2 e1 <= x < powerRZ 2 (e1 + 1) ->
+    ~ (powerRZ 2 e2 <= x).
+Proof.
+  intros e1 e2 x Hlt [_ Hhi] Hge.
+  apply Rle_not_lt in Hge. apply Hge.
+  eapply Rlt_le_trans; [exact Hhi|].
+  apply powerRZ_2_mono. lia.
+Qed.
+
+(** Exponent unique from magnitude. *)
+
+Theorem b64_repr_exponent_unique :
+  forall r1 r2,
+    b64_repr_normal r1 ->
+    b64_repr_normal r2 ->
+    Rabs (b64_repr_to_R r1) = Rabs (b64_repr_to_R r2) ->
+    b64_exponent r1 = b64_exponent r2.
+Proof.
+  intros r1 r2 Hn1 Hn2 Hmag.
+  pose proof (@b64_repr_to_R_normal_range r1 Hn1) as [H1lo H1hi].
+  pose proof (@b64_repr_to_R_normal_range r2 Hn2) as [H2lo H2hi].
+  destruct (Z.lt_trichotomy (b64_exponent r1) (b64_exponent r2))
+    as [Hlt | [Heq | Hgt]].
+  - exfalso.
+    assert (Hge2 : powerRZ 2 (b64_exponent r2 - b64_bias) <= Rabs (b64_repr_to_R r1)).
+    { rewrite Hmag. exact H2lo. }
+    apply (@powerRZ_2_intervals_disjoint (b64_exponent r1 - b64_bias)
+                                         (b64_exponent r2 - b64_bias)
+                                         (Rabs (b64_repr_to_R r1)));
+      [lia | split; assumption | exact Hge2].
+  - assumption.
+  - exfalso.
+    assert (Hge1 : powerRZ 2 (b64_exponent r1 - b64_bias) <= Rabs (b64_repr_to_R r2)).
+    { rewrite <- Hmag. exact H1lo. }
+    apply (@powerRZ_2_intervals_disjoint (b64_exponent r2 - b64_bias)
+                                         (b64_exponent r1 - b64_bias)
+                                         (Rabs (b64_repr_to_R r2)));
+      [lia | split; assumption | exact Hge1].
+Qed.
+
+(** Mantissa unique within an exponent class. *)
+
+Theorem b64_repr_mantissa_unique :
+  forall r1 r2,
+    b64_repr_normal r1 ->
+    b64_repr_normal r2 ->
+    b64_exponent r1 = b64_exponent r2 ->
+    Rabs (b64_repr_to_R r1) = Rabs (b64_repr_to_R r2) ->
+    b64_mantissa r1 = b64_mantissa r2.
+Proof.
+  intros r1 r2 [He1 Hm1] [He2 Hm2] Heeq Hmag.
+  unfold b64_repr_to_R in Hmag.
+  rewrite Heeq in Hmag.
+  pose proof (@b64_mantissa_scale_range (b64_mantissa r1) Hm1) as [Hq1_lo Hq1_hi].
+  pose proof (@b64_mantissa_scale_range (b64_mantissa r2) Hm2) as [Hq2_lo Hq2_hi].
+  pose proof (powerRZ_2_pos (b64_exponent r2 - b64_bias)) as Hp_pos.
+  set (s1 := if b64_sign r1 then -1 else 1) in *.
+  set (s2 := if b64_sign r2 then -1 else 1) in *.
+  set (m1 := INR (b64_mantissa r1)) in *.
+  set (m2 := INR (b64_mantissa r2)) in *.
+  set (q1 := 1 + m1 / 2 ^ 52) in *.
+  set (q2 := 1 + m2 / 2 ^ 52) in *.
+  set (p := powerRZ 2 (b64_exponent r2 - b64_bias)) in *.
+  assert (Habs1 : Rabs s1 = 1).
+  { unfold s1. destruct (b64_sign r1).
+    - replace (-1) with (-(1)) by lra. rewrite Rabs_Ropp, Rabs_R1. reflexivity.
+    - apply Rabs_R1. }
+  assert (Habs2 : Rabs s2 = 1).
+  { unfold s2. destruct (b64_sign r2).
+    - replace (-1) with (-(1)) by lra. rewrite Rabs_Ropp, Rabs_R1. reflexivity.
+    - apply Rabs_R1. }
+  assert (Hq1_nn : 0 <= q1) by lra.
+  assert (Hq2_nn : 0 <= q2) by lra.
+  assert (Hp_nn : 0 <= p) by lra.
+  assert (Hmag_eq : q1 * p = q2 * p).
+  { rewrite !Rabs_mult in Hmag.
+    rewrite Habs1, Habs2, !Rmult_1_l in Hmag.
+    rewrite (Rabs_pos_eq q1 Hq1_nn) in Hmag.
+    rewrite (Rabs_pos_eq q2 Hq2_nn) in Hmag.
+    rewrite (Rabs_pos_eq p Hp_nn) in Hmag.
+    exact Hmag. }
+  assert (Hq_eq : q1 = q2).
+  { apply Rmult_eq_reg_r with (r := p); [exact Hmag_eq | lra]. }
+  unfold q1, q2 in Hq_eq.
+  assert (Hm_R_eq : m1 = m2) by lra.
+  unfold m1, m2 in Hm_R_eq.
+  apply INR_eq. assumption.
+Qed.
+
+(** Decode injectivity. *)
+
+Theorem b64_repr_decode_inj :
+  forall r1 r2,
+    b64_repr_normal r1 ->
+    b64_repr_normal r2 ->
+    b64_repr_to_R r1 = b64_repr_to_R r2 ->
+    r1 = r2.
+Proof.
+  intros r1 r2 Hn1 Hn2 Heq.
+  assert (Hmag : Rabs (b64_repr_to_R r1) = Rabs (b64_repr_to_R r2))
+    by (rewrite Heq; reflexivity).
+  pose proof (@b64_repr_exponent_unique r1 r2 Hn1 Hn2 Hmag) as Heeq.
+  pose proof (@b64_repr_mantissa_unique r1 r2 Hn1 Hn2 Heeq Hmag) as Hmeq.
+  assert (Hsign : b64_sign r1 = b64_sign r2).
+  { destruct Hn1 as [_ Hm1]. destruct Hn2 as [_ Hm2].
+    unfold b64_repr_to_R in Heq. rewrite Heeq, Hmeq in Heq.
+    pose proof (@b64_mantissa_scale_range (b64_mantissa r2) Hm2) as [Hq_lo _].
+    pose proof (powerRZ_2_pos (b64_exponent r2 - b64_bias)) as Hp_pos.
+    set (e := b64_exponent r2) in *.
+    set (p := powerRZ 2 (e - b64_bias)) in *.
+    set (m := INR (b64_mantissa r2)) in *.
+    set (q := 1 + m / 2 ^ 52) in *.
+    assert (Hqp_pos : 0 < q * p).
+    { apply Rmult_lt_0_compat; lra. }
+    set (s1 := if b64_sign r1 then -1 else 1) in *.
+    set (s2 := if b64_sign r2 then -1 else 1) in *.
+    assert (Hs : s1 = s2).
+    { apply Rmult_eq_reg_r with (r := q * p); [|lra].
+      replace (s1 * (q * p)) with (s1 * q * p) by ring.
+      replace (s2 * (q * p)) with (s2 * q * p) by ring.
+      exact Heq. }
+    unfold s1, s2 in Hs.
+    destruct (b64_sign r1); destruct (b64_sign r2); congruence || lra. }
+  destruct r1, r2. simpl in *. subst. reflexivity.
+Qed.
+
+(** Range envelope: every normal-range repr decodes into the IEEE
+    binary64 normal interval [[2^{-1022}, 2^{1024})] in absolute value. *)
+
+Theorem b64_repr_to_R_envelope :
+  forall r,
+    b64_repr_normal r ->
+    powerRZ 2 (-1022) <= Rabs (b64_repr_to_R r) < powerRZ 2 1024.
+Proof.
+  intros r Hnorm. pose proof Hnorm as [He _].
+  pose proof (@b64_repr_to_R_normal_range r Hnorm) as [Hlo Hhi].
+  unfold b64_normal_emin, b64_normal_emax in He.
+  split.
+  - eapply Rle_trans; [|exact Hlo].
+    apply (@powerRZ_2_mono). unfold b64_bias. lia.
+  - eapply Rlt_le_trans; [exact Hhi|].
+    apply (@powerRZ_2_mono). unfold b64_bias. lia.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Massart-style uniform deviation bound for finite hypothesis classes.
+
+    A practical surrogate for the Rademacher complexity machinery
+    Stdlib does not provide. For a finite class of [M] losses each
+    bounded uniformly with high probability via Markov, the union
+    bound caps the worst-case deviation by [M * V / eps^2 / delta]
+    where [V] is the per-loss variance bound and [delta] is the
+    required confidence.
+
+    The result is the deterministic, finite-sample analog of the
+    PAC bound that is undischargeable from Stdlib alone. Combined
+    with [L_separated_zero_iff_separated_general], an empirical
+    [L_separated]-minimiser over a finite candidate class is a
+    near-population [Separated]-respecter with explicit sample
+    complexity. *)
+
+Local Open Scope R_scope.
+
+Theorem massart_finite_class_bound :
+  forall (samples : list R) (events : list (R -> bool))
+         (V eps delta : R),
+    0 < eps -> 0 < delta -> 0 <= V ->
+    (forall e, In e events -> eps * eps * prob_uniform samples e <= V) ->
+    INR (length events) * V <= eps * eps * delta ->
+    prob_uniform samples
+                 (fun x => existsb (fun e => e x) events) <= delta.
+Proof.
+  exact sample_complexity_chebyshev_bonferroni.
+Qed.
+
+(** Application: with [M := length events] hypothesis losses each
+    bounded by [V/eps^2] in deviation probability, sample size [n]
+    satisfying [n * delta * eps^2 >= M * V_per] (i.e., setting
+    [V := V_per / n] in the per-loss Chebyshev bound) suffices to
+    guarantee that no loss in the class deviates by [eps] with
+    probability worse than [delta]. *)
+
+Theorem massart_uniform_deviation :
+  forall (samples : list R) (events : list (R -> bool))
+         (V_per eps delta : R) (n : nat),
+    (1 <= n)%nat ->
+    0 < eps -> 0 < delta -> 0 <= V_per ->
+    INR (length samples) = INR n ->
+    (forall e, In e events ->
+       eps * eps * prob_uniform samples e <= V_per / INR n) ->
+    INR (length events) * V_per <= eps * eps * delta * INR n ->
+    prob_uniform samples
+                 (fun x => existsb (fun e => e x) events) <= delta.
+Proof.
+  intros samples events V_per eps delta n Hn Heps Hdelta HV Hlen Hper Htotal.
+  apply (@massart_finite_class_bound samples events (V_per / INR n) eps delta).
+  - exact Heps.
+  - exact Hdelta.
+  - assert (Hn_R : 0 < INR n) by (apply lt_0_INR; lia).
+    unfold Rdiv. apply Rmult_le_pos; [exact HV|left; apply Rinv_0_lt_compat; exact Hn_R].
+  - exact Hper.
+  - apply Rmult_le_reg_r with (r := INR n).
+    + apply lt_0_INR. lia.
+    + replace (INR (length events) * (V_per / INR n) * INR n)
+         with (INR (length events) * V_per).
+      * exact Htotal.
+      * field. assert (0 < INR n) by (apply lt_0_INR; lia). lra.
+Qed.
+
+Local Close Scope R_scope.
+
+(** ** Asymmetric Hoeffding's lemma for samples in [a, b].
+
+    Generalises [hoeffding_lemma_symmetric] from symmetric intervals
+    [[-h, h]] to arbitrary [[a, b]] with [a <= 0 <= b]. The kernel is
+    the log-MGF bound
+      [forall u >= 0, ln((1-p) + p * exp u) - p * u <= u^2 / 8]
+    for [p in [0, 1]], proved by [taylor_quadratic_bound] applied to
+    [L_p u := ln(g_p u) - p u] with [g_p u := (1-p) + p * exp u]. The
+    second derivative simplifies to [p (1-p) exp u / g_p u^2] and is
+    bounded by [1/4] via AM-GM. *)
+
+Local Open Scope R_scope.
+
+Section AsymmetricHoeffdingKernel.
+
+  Variable p : R.
+  Hypothesis Hp_lo : 0 <= p.
+  Hypothesis Hp_hi : p <= 1.
+
+  Definition g_p (u : R) : R := (1 - p) + p * exp u.
+
+  Lemma g_p_pos : forall u, 0 < g_p u.
+  Proof.
+    intros u. unfold g_p.
+    pose proof (exp_pos u) as Hexp. nra.
+  Qed.
+
+  Lemma g_p_at_0 : g_p 0 = 1.
+  Proof. unfold g_p. rewrite exp_0. lra. Qed.
+
+  (** Pointwise derivative of [g_p]. Direct ε-δ to avoid the
+      function-algebra wrapper. *)
+
+  Lemma derivable_pt_lim_g_p :
+    forall u, derivable_pt_lim g_p u (p * exp u).
+  Proof.
+    intros u.
+    pose proof (derivable_pt_lim_exp u) as Hexp_d.
+    intros eps Heps.
+    destruct (Req_dec p 0) as [Hp0 | Hp_ne].
+    - exists (mkposreal eps Heps). intros h Hh _.
+      unfold g_p. rewrite Hp0.
+      replace ((1 - 0 + 0 * exp (u + h) - (1 - 0 + 0 * exp u)) / h - 0 * exp u)
+         with 0 by (field; exact Hh).
+      rewrite Rabs_R0. exact Heps.
+    - assert (Hp_abs_pos : 0 < Rabs p) by (apply Rabs_pos_lt; exact Hp_ne).
+      pose (eps' := eps / Rabs p).
+      assert (Heps'_pos : 0 < eps').
+      { unfold eps'. apply Rmult_lt_0_compat;
+          [exact Heps | apply Rinv_0_lt_compat; exact Hp_abs_pos]. }
+      destruct (Hexp_d eps' Heps'_pos) as [delta Hbnd].
+      exists delta. intros h Hh Hh_bnd.
+      unfold g_p.
+      replace (((1 - p + p * exp (u + h)) - (1 - p + p * exp u)) / h - p * exp u)
+         with (p * ((exp (u + h) - exp u) / h - exp u)) by (field; exact Hh).
+      rewrite Rabs_mult.
+      apply Rmult_lt_reg_l with (r := / Rabs p);
+        [apply Rinv_0_lt_compat; exact Hp_abs_pos|].
+      replace (/ Rabs p * (Rabs p * Rabs ((exp (u + h) - exp u) / h - exp u)))
+         with (Rabs ((exp (u + h) - exp u) / h - exp u)) by (field; lra).
+      replace (/ Rabs p * eps) with (eps / Rabs p) by (field; lra).
+      apply (Hbnd h Hh Hh_bnd).
+  Qed.
+
+  (** Derivative of [ln (g_p u)] is [p exp u / g_p u]. *)
+
+  Lemma derivable_pt_lim_ln_g_p :
+    forall u, derivable_pt_lim (fun v => ln (g_p v)) u (p * exp u / g_p u).
+  Proof.
+    intros u.
+    pose proof (g_p_pos u) as Hgp.
+    pose proof (derivable_pt_lim_comp g_p ln u (p * exp u) (/ g_p u)
+                  (derivable_pt_lim_g_p u)
+                  (derivable_pt_lim_ln (g_p u) Hgp)) as Hd.
+    unfold comp in Hd.
+    replace (p * exp u / g_p u) with (/ g_p u * (p * exp u)) by (field; lra).
+    exact Hd.
+  Qed.
+
+  (** Derivative of [L_p u] is [p exp u / g_p u - p]. *)
+
+  Definition L_p_prime (u : R) : R := p * exp u / g_p u - p.
+
+  Lemma derivable_pt_lim_L_p :
+    forall u, derivable_pt_lim (fun v => ln (g_p v) - p * v) u (L_p_prime u).
+  Proof.
+    intros u. unfold L_p_prime.
+    apply derivable_pt_lim_minus.
+    - apply derivable_pt_lim_ln_g_p.
+    - replace p with (0 * u + p * 1) at 2 by lra.
+      apply derivable_pt_lim_mult.
+      + apply derivable_pt_lim_const.
+      + apply derivable_pt_lim_id.
+  Qed.
+
+  Lemma L_p_at_0 : ln (g_p 0) - p * 0 = 0.
+  Proof. rewrite g_p_at_0, ln_1. lra. Qed.
+
+  Lemma L_p_prime_at_0 : L_p_prime 0 = 0.
+  Proof.
+    unfold L_p_prime. rewrite exp_0, g_p_at_0. field.
+  Qed.
+
+  (** Second derivative of [L_p]. The quotient rule on
+      [p exp u / g_p u] gives [p exp u (g_p u - p exp u) / g_p u^2 =
+      p (1 - p) exp u / g_p u^2] (since [g_p u - p exp u = 1 - p]).
+      Subtracting the constant [p] contributes nothing to the second
+      derivative. *)
+
+  Definition L_p_second (u : R) : R := p * (1 - p) * exp u / (g_p u * g_p u).
+
+  Lemma derivable_pt_lim_L_p_prime :
+    forall u, derivable_pt_lim L_p_prime u (L_p_second u).
+  Proof.
+    intros u.
+    pose proof (g_p_pos u) as Hgp.
+    assert (Hgp_ne : g_p u <> 0) by lra.
+    pose proof (derivable_pt_lim_g_p u) as Hg_d.
+    assert (Hpe_d : derivable_pt_lim (fun v => p * exp v) u (p * exp u)).
+    { intros eps Heps.
+      destruct (Req_dec p 0) as [Hp0 | Hp_ne].
+      - exists (mkposreal eps Heps). intros h Hh _. rewrite Hp0.
+        replace ((0 * exp (u + h) - 0 * exp u) / h - 0 * exp u)
+           with 0 by (field; exact Hh).
+        rewrite Rabs_R0. exact Heps.
+      - assert (Hp_abs_pos : 0 < Rabs p) by (apply Rabs_pos_lt; exact Hp_ne).
+        pose (eps' := eps / Rabs p).
+        assert (Heps'_pos : 0 < eps') by
+          (unfold eps'; apply Rmult_lt_0_compat;
+             [exact Heps | apply Rinv_0_lt_compat; exact Hp_abs_pos]).
+        destruct (derivable_pt_lim_exp u eps' Heps'_pos) as [delta Hbnd].
+        exists delta. intros h Hh Hh_bnd.
+        replace ((p * exp (u + h) - p * exp u) / h - p * exp u)
+           with (p * ((exp (u + h) - exp u) / h - exp u)) by (field; exact Hh).
+        rewrite Rabs_mult.
+        apply Rmult_lt_reg_l with (r := / Rabs p);
+          [apply Rinv_0_lt_compat; exact Hp_abs_pos|].
+        replace (/ Rabs p * (Rabs p * Rabs ((exp (u + h) - exp u) / h - exp u)))
+           with (Rabs ((exp (u + h) - exp u) / h - exp u)) by (field; lra).
+        replace (/ Rabs p * eps) with (eps / Rabs p) by (field; lra).
+        apply (Hbnd h Hh Hh_bnd). }
+    pose proof (derivable_pt_lim_div (fun v => p * exp v) g_p u
+                  (p * exp u) (p * exp u) Hpe_d Hg_d Hgp_ne) as Hdiv_d.
+    unfold div_fct, inv_fct, mult_fct in Hdiv_d.
+    (* Hdiv_d : derivable_pt_lim (fun y => p * exp y * / g_p y) u
+                  ((p * exp u * g_p u - p * exp u * p * exp u) / (g_p u * g_p u))
+       — but Stdlib uses Rsqr or product form for denominator. *)
+    intros eps Heps.
+    destruct (Hdiv_d eps Heps) as [delta Hbnd].
+    exists delta. intros h Hh Hh_bnd.
+    specialize (Hbnd h Hh Hh_bnd).
+    unfold L_p_prime, L_p_second, Rsqr in *.
+    replace ((p * exp (u + h) / g_p (u + h) - p -
+              (p * exp u / g_p u - p)) / h -
+             p * (1 - p) * exp u / (g_p u * g_p u))
+       with ((p * exp (u + h) / g_p (u + h) -
+              p * exp u / g_p u) / h -
+             (p * exp u * g_p u - p * exp u * (p * exp u)) /
+              (g_p u * g_p u)).
+    + exact Hbnd.
+    + assert (Hgph := g_p_pos (u + h)).
+      assert (Hgph_ne : g_p (u + h) <> 0) by lra.
+      unfold g_p in Hgp_ne, Hgph_ne |- *.
+      field. split; [exact Hgp_ne | split; [exact Hgph_ne | exact Hh]].
+  Qed.
+
+  (** [L_p_second u <= 1/4] by AM-GM:
+      [p (1-p) exp u / g_p^2 = a*b / (a+b)^2] with [a = (1-p)] and
+      [b = p * exp u], and [a*b / (a+b)^2 <= 1/4]. *)
+
+  Lemma L_p_second_bound :
+    forall u, L_p_second u <= 1 / 4.
+  Proof.
+    intros u. unfold L_p_second, g_p.
+    pose proof (exp_pos u) as Hexp.
+    replace (p * (1 - p) * exp u) with ((1 - p) * (p * exp u)) by ring.
+    set (a := 1 - p).
+    set (b := p * exp u).
+    fold a b.
+    assert (Ha_nn : 0 <= a) by (unfold a; lra).
+    assert (Hb_nn : 0 <= b) by (unfold b; nra).
+    assert (Hab_pos : 0 < a + b).
+    { destruct (Req_dec p 0) as [Hp0 | Hp_ne].
+      - rewrite Hp0 in *. unfold a. lra.
+      - destruct (Req_dec p 1) as [Hp1 | Hp_ne1].
+        + unfold b. rewrite Hp1. nra.
+        + unfold a. lra. }
+    replace ((1 - p + p * exp u) * (1 - p + p * exp u))
+       with ((a + b) * (a + b))
+      by (unfold a, b; ring).
+    pose proof (Rle_0_sqr (a - b)) as Hsq. unfold Rsqr in Hsq.
+    assert (Hkey : 4 * a * b <= (a + b) * (a + b)) by nra.
+    apply Rmult_le_reg_r with (r := 4 * ((a + b) * (a + b))).
+    { apply Rmult_lt_0_compat; [lra|nra]. }
+    replace (a * b / ((a + b) * (a + b)) * (4 * ((a + b) * (a + b))))
+       with (4 * a * b)
+      by (field; nra).
+    replace (1 / 4 * (4 * ((a + b) * (a + b))))
+       with ((a + b) * (a + b))
+      by lra.
+    exact Hkey.
+  Qed.
+
+  Lemma L_p_second_nonneg :
+    forall u, 0 <= L_p_second u.
+  Proof.
+    intros u. unfold L_p_second.
+    pose proof (exp_pos u) as Hexp.
+    pose proof (g_p_pos u) as Hgp.
+    assert (Hgsq_pos : 0 < g_p u * g_p u) by nra.
+    apply Rmult_le_pos.
+    - assert (H_pp : 0 <= p * (1 - p)) by nra.
+      apply Rmult_le_pos; [exact H_pp | left; exact Hexp].
+    - left. apply Rinv_0_lt_compat. exact Hgsq_pos.
+  Qed.
+
+  (** The log-MGF bound: [L_p u <= u^2/8] for [u >= 0]. Direct
+      [taylor_quadratic_bound] application with [M = 1/4]. *)
+
+  Theorem hoeffding_log_mgf_bound_nonneg :
+    forall u, 0 <= u -> ln (g_p u) - p * u <= u * u / 8.
+  Proof.
+    intros u Hu.
+    pose proof (@taylor_quadratic_bound (fun v => ln (g_p v) - p * v)
+                  L_p_prime L_p_second (1 / 4) 0 u Hu ltac:(lra)
+                  L_p_at_0 L_p_prime_at_0
+                  (fun v _ => derivable_pt_lim_L_p v)
+                  (fun v _ => derivable_pt_lim_L_p_prime v)
+                  (fun v _ => L_p_second_bound v)) as Htay.
+    replace (u - 0) with u in Htay by lra.
+    replace (1 / 4 / 2 * (u * u)) with (u * u / 8) in Htay by lra.
+    exact Htay.
+  Qed.
+
+  (** Symmetry: [L_p u = L_{1-p} (-u)]. Hence the bound extends to
+      [u < 0]. *)
+
+End AsymmetricHoeffdingKernel.
+
+(** Symmetry between [p] and [1 - p] under sign flip of [u]. *)
+
+Lemma g_p_neg_swap :
+  forall p u, g_p p (- u) * exp u = g_p (1 - p) u.
+Proof.
+  intros p u. unfold g_p.
+  rewrite (exp_Ropp u).
+  pose proof (exp_pos u) as Hexp.
+  field. lra.
+Qed.
+
+Lemma L_p_symmetry :
+  forall p u, 0 <= p <= 1 ->
+    ln (g_p p u) - p * u = ln (g_p (1 - p) (- u)) - (1 - p) * (- u).
+Proof.
+  intros p u [Hp_lo Hp_hi].
+  pose proof (@g_p_pos (1 - p) ltac:(lra) ltac:(lra) (-u)) as Hgp1.
+  pose proof (exp_pos u) as Hexpu.
+  pose proof (@g_p_pos p Hp_lo Hp_hi u) as Hgp_p.
+  assert (Hgp_eq : g_p p u = g_p (1 - p) (- u) * exp u).
+  { unfold g_p.
+    rewrite (exp_Ropp u).
+    field. lra. }
+  rewrite Hgp_eq.
+  rewrite ln_mult by assumption.
+  rewrite ln_exp.
+  ring.
+Qed.
+
+Theorem hoeffding_log_mgf_bound :
+  forall p u, 0 <= p <= 1 ->
+    ln (g_p p u) - p * u <= u * u / 8.
+Proof.
+  intros p u [Hp_lo Hp_hi].
+  destruct (Rle_or_lt 0 u) as [Hu | Hu].
+  - apply (@hoeffding_log_mgf_bound_nonneg p Hp_lo Hp_hi u Hu).
+  - rewrite (@L_p_symmetry p u (conj Hp_lo Hp_hi)).
+    replace (u * u / 8) with ((- u) * (- u) / 8) by lra.
+    apply (@hoeffding_log_mgf_bound_nonneg (1 - p) ltac:(lra) ltac:(lra)
+            (- u) ltac:(lra)).
+Qed.
+
+(** Asymmetric Hoeffding key: for [a <= 0 <= b] and [u = lam * (b - a)],
+    [b/(b-a) * exp(lam*a) + (-a)/(b-a) * exp(lam*b) <= exp(lam^2 (b-a)^2 / 8)]. *)
+
+Theorem hoeffding_convex_combination_bound :
+  forall (lam a b : R),
+    a < b -> a <= 0 <= b ->
+    b / (b - a) * exp (lam * a) + (- a) / (b - a) * exp (lam * b) <=
+    exp (lam * lam * (b - a) * (b - a) / 8).
+Proof.
+  intros lam a b Hab Hcent.
+  set (p := - a / (b - a)).
+  set (u := lam * (b - a)).
+  assert (Hba_pos : 0 < b - a) by lra.
+  assert (Hp_lo : 0 <= p).
+  { unfold p. unfold Rdiv. apply Rmult_le_pos; [lra|left; apply Rinv_0_lt_compat; lra]. }
+  assert (Hp_hi : p <= 1).
+  { unfold p. apply Rmult_le_reg_r with (r := b - a); [lra|].
+    unfold Rdiv. rewrite Rmult_assoc, Rinv_l by lra. lra. }
+  assert (H1mp : 1 - p = b / (b - a)).
+  { unfold p. field. lra. }
+  assert (Hla : lam * a = - p * u).
+  { unfold p, u. field. lra. }
+  assert (Hlb : lam * b = (1 - p) * u).
+  { unfold u. rewrite H1mp. field. lra. }
+  rewrite Hla, Hlb.
+  rewrite <- H1mp. unfold p at 2.
+  fold p.
+  pose proof (@hoeffding_log_mgf_bound p u (conj Hp_lo Hp_hi)) as Hlog.
+  pose proof (@g_p_pos p Hp_lo Hp_hi u) as Hgp.
+  (* exp side: ln(g_p u) <= p*u + u^2/8, exp gives g_p u <= exp(p*u + u^2/8). *)
+  assert (Hg_le : g_p p u <= exp (p * u + u * u / 8)).
+  { rewrite <- (exp_ln (g_p p u) Hgp).
+    destruct (Req_dec (ln (g_p p u)) (p * u + u * u / 8)) as [Heq | Hne].
+    - rewrite Heq. apply Rle_refl.
+    - apply Rlt_le. apply exp_increasing. lra. }
+  (* (1-p) exp(-pu) + p exp((1-p)u) = exp(-pu) * g_p u <= exp(u^2/8). *)
+  apply Rmult_le_reg_l with (r := exp (p * u)); [apply exp_pos|].
+  replace (exp (p * u) * ((1 - p) * exp (- p * u) + p * exp ((1 - p) * u)))
+     with ((1 - p) * (exp (p * u) * exp (- p * u)) +
+           p * (exp (p * u) * exp ((1 - p) * u))) by ring.
+  rewrite <- !exp_plus.
+  replace (p * u + - p * u) with 0 by lra.
+  rewrite exp_0.
+  replace (p * u + (1 - p) * u) with u by lra.
+  unfold g_p in Hg_le.
+  replace ((1 - p) * 1 + p * exp u) with (1 - p + p * exp u) by lra.
+  replace (lam * lam * (b - a) * (b - a) / 8) with (u * u / 8)
+    by (unfold u; lra).
+  exact Hg_le.
+Qed.
+
+(** Hoeffding's lemma proper: for centered samples in [[a, b]] with
+    [a <= 0 <= b], the empirical MGF is bounded by the Gaussian
+    envelope [exp(lam^2 (b - a)^2 / 8)]. *)
+
+Theorem hoeffding_lemma_asymmetric :
+  forall (samples : list R) (lam a b : R),
+    a < b -> a <= 0 <= b ->
+    fold_right Rplus 0 samples = 0 ->
+    (forall x, In x samples -> a <= x <= b) ->
+    fold_right Rplus 0 (map (fun x => exp (lam * x)) samples) <=
+    INR (length samples) * exp (lam * lam * (b - a) * (b - a) / 8).
+Proof.
+  intros samples lam a b Hab Hcent Hsum Hbnd.
+  pose proof (@mgf_sum_convexity_bound samples lam a b Hab Hbnd) as Hsum_bnd.
+  rewrite Hsum in Hsum_bnd.
+  eapply Rle_trans; [exact Hsum_bnd|].
+  pose proof (@hoeffding_convex_combination_bound lam a b Hab Hcent) as Hkey.
+  replace ((b * INR (length samples) - 0) / (b - a))
+     with (INR (length samples) * (b / (b - a)))
+    by (field; lra).
+  replace ((0 - a * INR (length samples)) / (b - a))
+     with (INR (length samples) * ((- a) / (b - a)))
+    by (field; lra).
+  replace (INR (length samples) * (b / (b - a)) * exp (lam * a) +
+           INR (length samples) * ((- a) / (b - a)) * exp (lam * b))
+     with (INR (length samples) *
+           (b / (b - a) * exp (lam * a) + (- a) / (b - a) * exp (lam * b)))
+    by ring.
+  apply Rmult_le_compat_l; [apply pos_INR | exact Hkey].
+Qed.
+
+Local Close Scope R_scope.
