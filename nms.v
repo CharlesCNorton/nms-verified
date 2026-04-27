@@ -6270,6 +6270,98 @@ Proof.
     destruct (Rle_dec 0 (x - expect_uniform samples)) as [Hp | Hn]; nra.
 Qed.
 
+(** ** Chernoff-Markov bound: tightening Markov via the
+    moment-generating function.
+
+    A natural strengthening of [markov_finite_uniform] applies Markov
+    to the transformed sample [exp (lambda * x)]: for any
+    [lambda > 0],
+    [exp(lambda * a) * P(X >= a) <= E[exp(lambda * X)]].
+    This is the "Chernoff method" — pick [lambda] to minimize the RHS
+    for the tightest tail bound. The full Hoeffding bound
+    [P(X >= a) <= 2 exp(-2 n a^2 / (b - a)^2)] follows by combining
+    this with the sub-Gaussian MGF bound
+    [E[exp(lambda * X)] <= exp(lambda^2 * (b - a)^2 / 8)] for centered
+    bounded [X], whose proof requires a convexity argument on [exp];
+    that argument is built from primitives. *)
+
+Definition mgf_uniform (samples : list R) (lambda : R) : R :=
+  expect_uniform (map (fun x => exp (lambda * x)) samples).
+
+Lemma exp_le_compat :
+  forall x y, x <= y -> exp x <= exp y.
+Proof.
+  intros x y [Hlt | Heq].
+  - left. apply exp_increasing. assumption.
+  - subst. apply Rle_refl.
+Qed.
+
+Lemma exp_le_inv :
+  forall x y, exp x <= exp y -> x <= y.
+Proof.
+  intros x y [Hlt | Heq].
+  - left. apply exp_lt_inv. assumption.
+  - apply exp_inv in Heq. subst. apply Rle_refl.
+Qed.
+
+Lemma length_filter_map_iff :
+  forall (A B : Type) (f : A -> B) (P : A -> bool) (Q : B -> bool)
+         (l : list A),
+    (forall x, P x = Q (f x)) ->
+    length (filter Q (map f l)) = length (filter P l).
+Proof.
+  intros A B f P Q l Hpq.
+  induction l as [|x rest IH]; simpl; [reflexivity|].
+  rewrite <- Hpq. destruct (P x); simpl; [f_equal|]; apply IH.
+Qed.
+
+Lemma prob_uniform_exp_event_eq :
+  forall samples lambda a,
+    0 < lambda ->
+    prob_uniform samples
+      (fun x => if Rle_dec a x then true else false) =
+    prob_uniform (map (fun x => exp (lambda * x)) samples)
+                 (fun y => if Rle_dec (exp (lambda * a)) y
+                           then true else false).
+Proof.
+  intros samples lambda a Hl.
+  unfold prob_uniform.
+  rewrite length_map.
+  destruct (Nat.eqb_spec (length samples) 0); [reflexivity|].
+  f_equal. f_equal.
+  rewrite (@length_filter_map_iff R R
+            (fun x : R => exp (lambda * x))
+            (fun x : R => if Rle_dec a x then true else false)
+            (fun y : R =>
+              if Rle_dec (exp (lambda * a)) y then true else false)
+            samples).
+  - reflexivity.
+  - intros x.
+    destruct (Rle_dec a x) as [Hax | Hax];
+    destruct (Rle_dec (exp (lambda * a)) (exp (lambda * x)))
+      as [Hexp | Hexp]; try reflexivity.
+    + exfalso. apply Hexp. apply exp_le_compat. nra.
+    + exfalso. apply Hax.
+      apply exp_le_inv in Hexp.
+      apply (Rmult_le_reg_l lambda); [assumption | exact Hexp].
+Qed.
+
+Theorem chernoff_markov_bound :
+  forall samples lambda a,
+    0 < lambda ->
+    exp (lambda * a) *
+    prob_uniform samples
+      (fun x => if Rle_dec a x then true else false)
+    <= mgf_uniform samples lambda.
+Proof.
+  intros samples lambda a Hl.
+  rewrite (@prob_uniform_exp_event_eq samples lambda a Hl).
+  apply markov_finite_uniform.
+  - apply exp_pos.
+  - intros y Hy. apply in_map_iff in Hy as [x [Heq _]]. subst y.
+    left. apply exp_pos.
+Qed.
+
 Local Close Scope R_scope.
 
 (** ** Concrete Lipschitz bound for a real two-layer architecture.
