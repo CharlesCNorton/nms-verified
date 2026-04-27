@@ -10028,6 +10028,80 @@ End AssignmentDuality.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *  Part XXIV. Hungarian-output witness predicate                      *)
+(** ******************************************************************** *)
+
+(** Practical API for using Part XXIII's LP-duality theorem. Packages
+    the four duality conditions (perfect matching, dual feasibility,
+    complementary slackness) into a single predicate
+    [is_hungarian_witness], then provides the corollary
+    [hungarian_witness_optimal] that consumers call directly to
+    derive optimality of any matching for which dual variables can be
+    exhibited.
+
+    For an O(n^3) Hungarian implementation, this is the contract: at
+    termination, produce (M, u, v) for which [is_hungarian_witness]
+    holds, then apply [hungarian_witness_optimal]. The structural
+    invariant is exactly what Hungarian's potentials/alternating
+    trees/augmenting paths machinery maintains throughout iteration —
+    no LP-polytope theory needed beyond Part XXIII.
+
+    Theorems delivered:
+
+      Theorem 1.  hungarian_witness_optimal
+                  — output of any algorithm satisfying the duality
+                    witness predicate is optimal among perfect
+                    matchings.
+      Theorem 2.  hungarian_witness_unique_value
+                  — two witnesses on the same input yield matchings
+                    of equal weight (corollary of 1). *)
+
+Local Open Scope R_scope.
+
+Section HungarianWitness.
+  Variable Box GT : Type.
+  Variable cost : Box -> GT -> R.
+
+  Definition is_hungarian_witness
+      (boxes : list Box) (gts : list GT)
+      (M : list (Box * GT)) (u : Box -> R) (v : GT -> R) : Prop :=
+    Permutation (map fst M) boxes /\
+    Permutation (map snd M) gts /\
+    (forall b g, In b boxes -> In g gts -> u b + v g >= cost b g) /\
+    (forall b g, In (b, g) M -> u b + v g = cost b g).
+
+  Theorem hungarian_witness_optimal :
+    forall boxes gts M u v,
+      is_hungarian_witness boxes gts M u v ->
+      forall M',
+        Permutation (map fst M') boxes ->
+        Permutation (map snd M') gts ->
+        matching_weight cost M' <= matching_weight cost M.
+  Proof.
+    intros boxes gts M u v [Hbox [Hgt [Hfeas Hslack]]] M' Hbox' Hgt'.
+    apply (@hungarian_optimal_via_duality Box GT cost boxes gts M u v
+             Hbox Hgt Hfeas Hslack M' Hbox' Hgt').
+  Qed.
+
+  Theorem hungarian_witness_unique_value :
+    forall boxes gts M1 u1 v1 M2 u2 v2,
+      is_hungarian_witness boxes gts M1 u1 v1 ->
+      is_hungarian_witness boxes gts M2 u2 v2 ->
+      matching_weight cost M1 = matching_weight cost M2.
+  Proof.
+    intros boxes gts M1 u1 v1 M2 u2 v2 H1 H2.
+    apply Rle_antisym.
+    - destruct H1 as [Hbox1 [Hgt1 _]].
+      apply (hungarian_witness_optimal H2 M1 Hbox1 Hgt1).
+    - destruct H2 as [Hbox2 [Hgt2 _]].
+      apply (hungarian_witness_optimal H1 M2 Hbox2 Hgt2).
+  Qed.
+
+End HungarianWitness.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
