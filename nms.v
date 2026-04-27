@@ -10185,6 +10185,120 @@ Qed.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *  Part XXVI. Convexity of exp                                        *)
+(** ******************************************************************** *)
+
+(** Convexity of [exp] derived from MVT. Closes the analytic prerequisite
+    for Hoeffding's lemma. The proof goes through two MVT applications
+    on disjoint sub-intervals, deriving strict secant-slope monotonicity
+    [(exp y - exp x)/(y - x) < (exp z - exp y)/(z - y)] for [x < y < z],
+    which in turn implies the convexity inequality
+    [exp(λx + (1-λ)y) <= λ exp x + (1-λ) exp y] by elementary algebra.
+
+    Theorems delivered:
+
+      Theorem 1.  exp_MVT
+                  — Mean Value Theorem instantiated at [exp].
+      Theorem 2.  exp_secant_increasing
+                  — secant slopes of exp are strictly increasing on
+                    nested subintervals.
+      Theorem 3.  exp_convex
+                  — convexity inequality for exp on any interval. *)
+
+Local Open Scope R_scope.
+
+From Stdlib Require Import MVT.
+
+Theorem exp_MVT :
+  forall a b, a < b ->
+    exists c, a < c < b /\ exp b - exp a = exp c * (b - a).
+Proof.
+  intros a b Hab.
+  destruct (MVT_cor2 exp exp a b Hab (fun c _ => derivable_pt_lim_exp c))
+    as [c [Heq Hc]].
+  exists c. split; assumption.
+Qed.
+
+Theorem exp_secant_increasing :
+  forall x y z, x < y -> y < z ->
+    (exp y - exp x) / (y - x) < (exp z - exp y) / (z - y).
+Proof.
+  intros x y z Hxy Hyz.
+  destruct (exp_MVT Hxy) as [c1 [Hc1 Heq1]].
+  destruct (exp_MVT Hyz) as [c2 [Hc2 Heq2]].
+  assert (Hyx_pos : y - x > 0) by lra.
+  assert (Hzy_pos : z - y > 0) by lra.
+  assert (Hexp_c1 : exp c1 = (exp y - exp x) / (y - x)).
+  { rewrite Heq1. field. lra. }
+  assert (Hexp_c2 : exp c2 = (exp z - exp y) / (z - y)).
+  { rewrite Heq2. field. lra. }
+  rewrite <- Hexp_c1, <- Hexp_c2.
+  apply exp_increasing.
+  destruct Hc1 as [_ Hc1_y]. destruct Hc2 as [Hy_c2 _]. lra.
+Qed.
+
+(** ** Helper: strict convexity for ordered points x < y. *)
+
+Lemma exp_strictly_convex_lt :
+  forall x y lambda,
+    x < y ->
+    0 < lambda < 1 ->
+    exp (lambda * x + (1 - lambda) * y) <
+    lambda * exp x + (1 - lambda) * exp y.
+Proof.
+  intros x y lambda Hxy [Hlam_pos Hlam_lt1].
+  set (z := lambda * x + (1 - lambda) * y).
+  assert (Hxz : x < z) by (unfold z; nra).
+  assert (Hzy : z < y) by (unfold z; nra).
+  pose proof (exp_secant_increasing Hxz Hzy) as Hsec.
+  assert (Hzx_pos : z - x > 0) by lra.
+  assert (Hyz_pos : y - z > 0) by lra.
+  assert (Hyx_pos : y - x > 0) by lra.
+  (* Cross-multiply Hsec: (exp z - exp x) * (y - z) < (exp y - exp z) * (z - x) *)
+  apply Rmult_lt_compat_r with (r := (z - x) * (y - z)) in Hsec; [|nra].
+  replace ((exp z - exp x) / (z - x) * ((z - x) * (y - z)))
+    with ((exp z - exp x) * (y - z)) in Hsec by (field; lra).
+  replace ((exp y - exp z) / (y - z) * ((z - x) * (y - z)))
+    with ((exp y - exp z) * (z - x)) in Hsec by (field; lra).
+  (* Now: (exp z - exp x) * (y - z) < (exp y - exp z) * (z - x). Algebra. *)
+  unfold z in *. nra.
+Qed.
+
+Theorem exp_convex :
+  forall x y lambda,
+    0 <= lambda <= 1 ->
+    exp (lambda * x + (1 - lambda) * y) <=
+    lambda * exp x + (1 - lambda) * exp y.
+Proof.
+  intros x y lambda [Hlam_lo Hlam_hi].
+  destruct (Rle_lt_or_eq_dec _ _ Hlam_lo) as [Hlam_pos | Hlam_zero].
+  - destruct (Rle_lt_or_eq_dec _ _ Hlam_hi) as [Hlam_lt1 | Hlam_one].
+    + destruct (Rtotal_order x y) as [Hxy | [Hxy_eq | Hyx]].
+      * left.
+        apply exp_strictly_convex_lt; [assumption | split; assumption].
+      * subst y. replace (lambda * x + (1 - lambda) * x) with x by lra.
+        replace (lambda * exp x + (1 - lambda) * exp x) with (exp x) by lra.
+        apply Rle_refl.
+      * (* y < x: swap roles via lambda' = 1 - lambda *)
+        left.
+        replace (lambda * x + (1 - lambda) * y)
+           with ((1 - lambda) * y + (1 - (1 - lambda)) * x) by lra.
+        replace (lambda * exp x + (1 - lambda) * exp y)
+           with ((1 - lambda) * exp y + (1 - (1 - lambda)) * exp x) by lra.
+        apply exp_strictly_convex_lt; [assumption | split; lra].
+    + symmetry in Hlam_one. subst lambda.
+      replace (1 * x + (1 - 1) * y) with x by lra.
+      replace (1 * exp x + (1 - 1) * exp y) with (exp x) by lra.
+      apply Rle_refl.
+  - symmetry in Hlam_zero. subst lambda.
+    replace (0 * x + (1 - 0) * y) with y by lra.
+    replace (0 * exp x + (1 - 0) * exp y) with (exp y) by lra.
+    apply Rle_refl.
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
