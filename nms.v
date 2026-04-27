@@ -2459,7 +2459,7 @@ Proof.
   intros a b Hd. unfold ibox_iou, ibox_disjoint in *.
   rewrite Hd.
   destruct (Nat.eqb_spec (ibox_area a + ibox_area b - 0) 0); [reflexivity|].
-  rewrite Nat.mul_0_l, Nat.div_0_l by lia. reflexivity.
+  rewrite Nat.mul_0_l, Nat.Div0.div_0_l. reflexivity.
 Qed.
 
 (** ** [v ↦ M_n (ReLU (M_{n-1} (... ReLU (M_1 v))))] is bounded by
@@ -3133,7 +3133,7 @@ Qed.
 
 (** ** OCaml extraction. *)
 
-Require Coq.extraction.Extraction.
+From Stdlib Require Import Extraction.
 Extraction Language OCaml.
 Set Extraction Optimize.
 Set Extraction AccessOpaque.

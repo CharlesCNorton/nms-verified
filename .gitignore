@@ -6,10 +6,10 @@
 .*.aux
 .lia.cache
 .nia.cache
+.nra.cache
 .Makefile.d
-Makefile
-Makefile.conf
-_CoqProject
+Makefile.coq
+Makefile.coq.conf
 nms_extracted.ml
 nms_extracted.mli
 nms_cert.ml
