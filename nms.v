@@ -4247,7 +4247,7 @@ End FCOSArchitecturallyDerived.
     [forall a b, a <> b -> iou a b < tau] at the box level — is
     derived here from an injective bipartite matching with disjoint
     ground-truth representatives. The matching axiom factors into the
-    smaller, more architectural [matching_injective] and
+    smaller, more architectural [matched_gt_injective] and
     [distinct_gt_disjoint] hypotheses. *)
 
 Section DETRMatchingDerived.
@@ -4259,7 +4259,7 @@ Section DETRMatchingDerived.
 
   Variable matched_gt : Box -> GT.
 
-  Hypothesis matching_injective :
+  Hypothesis matched_gt_injective :
     forall a b, matched_gt a = matched_gt b -> a = b.
 
   Hypothesis distinct_gt_disjoint :
@@ -4270,7 +4270,7 @@ Section DETRMatchingDerived.
   Proof.
     intros a b Hne.
     destruct (gt_eq_dec (matched_gt a) (matched_gt b)) as [Hgeq | Hgne].
-    - exfalso. apply Hne. apply matching_injective. assumption.
+    - exfalso. apply Hne. apply matched_gt_injective. assumption.
     - apply distinct_gt_disjoint. assumption.
   Qed.
 End DETRMatchingDerived.
@@ -7408,7 +7408,7 @@ Local Close Scope R_scope.
     For DETR's bipartite matching architecture, the gap is
     structurally derivable not from the score head but from the
     matching invariant. At training equilibrium, distinct
-    predictions carry distinct GT labels ([matching_injective]) and
+    predictions carry distinct GT labels ([matched_gt_injective]) and
     distinct GTs occupy disjoint boxes ([distinct_gt_disjoint]).
     Composing these two architectural primitives with a
     [unique_boxes] hypothesis on the prediction list forces
@@ -7419,7 +7419,7 @@ Local Close Scope R_scope.
     This derives the bridge precondition from the architecture
     instead of assuming it. The chain:
 
-      matching_injective + distinct_gt_disjoint + unique_boxes
+      matched_gt_injective + distinct_gt_disjoint + unique_boxes
         => detr_matching_pairwise_disjoint   (already proved)
         => detr_equilibrium_margin_vacuous   (the bridge's margin)
         => detr_equilibrium_threshold_vacuous (the bridge's threshold)
@@ -7436,7 +7436,7 @@ Section DETREquilibriumMargin.
   Variable tau : nat.
   Variable matched_gt : Box -> GT.
 
-  Hypothesis matching_injective :
+  Hypothesis matched_gt_injective :
     forall a b, matched_gt a = matched_gt b -> a = b.
 
   Hypothesis distinct_gt_disjoint :
@@ -7471,7 +7471,7 @@ Section DETREquilibriumMargin.
     exfalso.
     pose proof (Huniq d d' Hin Hin' Hne) as Hbox_ne.
     pose proof (@detr_matching_pairwise_disjoint Box GT gt_eq_dec iou tau
-                  matched_gt matching_injective distinct_gt_disjoint
+                  matched_gt matched_gt_injective distinct_gt_disjoint
                   (box d) (box d') Hbox_ne) as Hlt.
     lia.
   Qed.
@@ -7490,7 +7490,7 @@ Section DETREquilibriumMargin.
     exfalso.
     pose proof (Huniq d d' Hin Hin' Hne) as Hbox_ne.
     pose proof (@detr_matching_pairwise_disjoint Box GT gt_eq_dec iou tau
-                  matched_gt matching_injective distinct_gt_disjoint
+                  matched_gt matched_gt_injective distinct_gt_disjoint
                   (box d) (box d') Hbox_ne) as Hlt.
     lia.
   Qed.
@@ -12845,7 +12845,7 @@ Local Close Scope R_scope.
 
 (** [DETREquilibriumMargin] discharges the bridge's margin and
     threshold hypotheses structurally for set-prediction architectures
-    (DETR), via the matching primitives [matching_injective],
+    (DETR), via the matching primitives [matched_gt_injective],
     [distinct_gt_disjoint], and [unique_boxes]. Anchor-based detectors
     (FCOS, RetinaNet, ATSS) do not have a bipartite matching but do
     have a stride-grid assignment: each anchor is associated with a
