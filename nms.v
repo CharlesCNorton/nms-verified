@@ -6564,7 +6564,6 @@ Section ConstructiveTraining.
   Definition trained_list (D : list (@det Box)) : list (@det Box) :=
     nms_sorted iou tau D.
 
-  (** Theorem 5. *)
   Theorem train_separated :
     forall D, Separated iou tau theta 1 (trained_list D).
   Proof.
@@ -6584,7 +6583,6 @@ Section ConstructiveTraining.
     - lia.
   Defined.
 
-  (** Theorem 6. *)
   Theorem train_head_apply :
     forall D,
       sep_apply iou tau theta train_head
@@ -6603,7 +6601,6 @@ Section ConstructiveTraining.
         as Hlt. lia.
   Qed.
 
-  (** Theorem 7. *)
   Theorem train_head_yields_collapse :
     forall D, NoDup (trained_list D) -> sorted_desc (trained_list D) ->
       filter_above theta (nms_sorted iou tau (trained_list D)) =
@@ -6615,7 +6612,6 @@ Section ConstructiveTraining.
     vm_compute. lia.
   Qed.
 
-  (** Theorem 8. *)
   Theorem train_collapse :
     forall D, NoDup D -> sorted_desc D ->
       filter_above theta (nms_sorted iou tau (trained_list D)) =
@@ -7455,7 +7451,7 @@ Section DETREquilibriumMargin.
   Definition unique_boxes (D : list (@det Box)) : Prop :=
     forall d d', In d D -> In d' D -> d <> d' -> box d <> box d'.
 
-  (** Theorem 1. The bridge's margin hypothesis is vacuously
+  (**The bridge's margin hypothesis is vacuously
       satisfied under DETR equilibrium. No distinct pair has IoU
       above [tau], so the implication's premise is unfalsifiable. *)
 
@@ -7476,7 +7472,7 @@ Section DETREquilibriumMargin.
     lia.
   Qed.
 
-  (** Theorem 2. The bridge's threshold hypothesis is vacuously
+  (**The bridge's threshold hypothesis is vacuously
       satisfied under DETR equilibrium. *)
 
   Theorem detr_equilibrium_threshold_vacuous :
@@ -7495,7 +7491,7 @@ Section DETREquilibriumMargin.
     lia.
   Qed.
 
-  (** Theorem 3. End-to-end composition: DETR equilibrium yields
+  (**End-to-end composition: DETR equilibrium yields
       [Separated] via [lipschitz_bridge_substantive], discharging
       the margin and threshold hypotheses structurally. The score
       head's Lipschitz property and the noise-budget hypothesis
@@ -7576,7 +7572,7 @@ Proof.
   simpl. split; [|exact I]. split; nra.
 Qed.
 
-(** Theorem 1. IBP-derived local Lipschitz constant for the layer. *)
+(**IBP-derived local Lipschitz constant for the layer. *)
 
 Theorem e20_apply_layer_local_lipschitz :
   interval_lipschitz (apply_layer e20_M) e20_input_lo e20_input_hi 3.
@@ -7609,13 +7605,13 @@ Definition e20_D : list (@det c1_box) :=
     branch is structurally empty and the decidable [Separated_check]
     evaluates to [true] vacuously. *)
 
-(** Theorem 2. Executable Separated certificate via [vm_compute]. *)
+(**Executable Separated certificate via [vm_compute]. *)
 
 Theorem e20_separated_check_true :
   Separated_check c1_iou 70 100 Nat.eq_dec 1 e20_D = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Theorem 3. Lift the decidable check to [Separated] via the
+(**Lift the decidable check to [Separated] via the
     correctness theorem. *)
 
 Theorem e20_separated_at_slack_one :
@@ -7712,7 +7708,7 @@ Section MultilayerQuantLipschitz.
     apply Rmult_le_pos; assumption.
   Qed.
 
-  (** Theorem 1. Single-layer error bound: a Lipschitz layer
+  (**Single-layer error bound: a Lipschitz layer
       followed by quantization produces output within
       [L * |x - y| + 2 * q_eps] of the ideal Lipschitz bound. *)
 
@@ -7738,7 +7734,7 @@ Section MultilayerQuantLipschitz.
     lra.
   Qed.
 
-  (** Theorem 2. End-to-end quantized chain Lipschitz bound: the
+  (**End-to-end quantized chain Lipschitz bound: the
       N-layer chain [apply_quant_chain fs] is
       [chain_lip Ls]-Lipschitz with additive slack
       [2 * chain_quant_slack Ls]. The slack accumulates by suffix
@@ -7808,7 +7804,7 @@ Section SGDOnNonnegSmoothLoss.
               Lsm / 2 * dot (vec_sub y x) (vec_sub y x).
   Hypothesis f_nonneg : forall theta, length theta = n -> 0 <= f theta.
 
-  (** Theorem 1. The vector SGD analysis instantiated for a
+  (**The vector SGD analysis instantiated for a
       non-negative smooth loss with [f_lower = 0]. After [T]
       iterations from any [theta0] of dimension [n] with step size
       [eta * Lsm <= 1], the cumulative gradient-norm-squared is
@@ -7935,7 +7931,7 @@ Section ConvergenceUnderPL.
     forall theta, length theta = n ->
       2 * mu * (f theta - f_lower) <= dot (grad theta) (grad theta).
 
-  (** Theorem 1. Single-step linear contraction under PL. *)
+  (**Single-step linear contraction under PL. *)
 
   Theorem sgd_pl_one_step :
     forall theta eta,
@@ -7951,7 +7947,7 @@ Section ConvergenceUnderPL.
     nra.
   Qed.
 
-  (** Theorem 2. T-step geometric convergence to the global minimum.
+  (**T-step geometric convergence to the global minimum.
       The factor [(1 − η μ)^T] decays geometrically when [η μ < 1]. *)
 
   Theorem sgd_pl_linear_convergence :
@@ -8131,7 +8127,7 @@ Section MultiClassL.
     apply mc_pair_violation_nonneg.
   Qed.
 
-  (** Theorem 1. Per-triple zero decomposition. *)
+  (**Per-triple zero decomposition. *)
 
   Theorem mc_pair_violation_zero_separation :
     forall md1 md2 c,
@@ -8206,7 +8202,7 @@ Section MultiClassL.
     forall md md', In md mds -> In md' mds ->
                    mc_box md = mc_box md' -> md = md'.
 
-  (** Theorem 2. Zero loss implies the cs-restricted invariants
+  (**Zero loss implies the cs-restricted invariants
       under unique_boxes. *)
 
   Theorem L_mc_separated_zero_implies_invariants :
@@ -8303,7 +8299,7 @@ Section HungarianMatching.
   Definition matching_injective (M : list (Box * GT)) : Prop :=
     matching_box_injective M /\ matching_gt_injective M.
 
-  (** Theorem 1. Every non-empty list of reals contains an element
+  (**Every non-empty list of reals contains an element
       that is greater than or equal to all elements in the list. *)
 
   Theorem fold_right_Rmax_witness :
@@ -8327,7 +8323,7 @@ Section HungarianMatching.
         * pose proof (Hmax y0 Hin). lra.
   Qed.
 
-  (** Theorem 2. For any non-empty list of candidate matchings, the
+  (**For any non-empty list of candidate matchings, the
       maximum-weight matching exists in the list. The Hungarian
       algorithm constructs this maximum in [O(n^3)]; the existence
       theorem is the abstract correctness target. *)
