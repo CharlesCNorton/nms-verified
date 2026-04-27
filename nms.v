@@ -7947,6 +7947,62 @@ End SGDOnNonnegSmoothLoss.
 
 Local Close Scope R_scope.
 
+(** ******************************************************************** *)
+(** *      Part XII. Sample complexity composition formula              *)
+(** ******************************************************************** *)
+
+(** Closes the Chebyshev + Bonferroni chain into a single named
+    theorem. For each event in a list, a per-event Chebyshev-style
+    bound [eps² * prob_e <= V] is given (this is the conclusion of
+    [chebyshev_finite_uniform] applied to the squared-deviation
+    random variable). Bonferroni's union bound aggregates them.
+    The closed-form: if [M * V <= eps² * delta] then the union
+    probability of any event firing is at most [delta], where M is
+    the number of events.
+
+    Standard reading: with M hypotheses each bounded by V, sample
+    size n satisfying [n * delta * eps² >= M * V_per] suffices,
+    when V scales as V_per / n. Here V is left abstract — instantiate
+    with the appropriate variance factor for the empirical-mean
+    application (a Chebyshev-on-sample-mean theorem, beyond Stdlib's
+    current scope, would supply V = V_per / n).
+
+    Theorem 1.  sample_complexity_chebyshev_bonferroni *)
+
+Local Open Scope R_scope.
+
+Theorem sample_complexity_chebyshev_bonferroni :
+  forall (samples : list R) (events : list (R -> bool))
+         (V eps delta : R),
+    0 < eps -> 0 < delta -> 0 <= V ->
+    (forall e, In e events -> eps * eps * prob_uniform samples e <= V) ->
+    INR (length events) * V <= eps * eps * delta ->
+    prob_uniform samples
+                 (fun x => existsb (fun e => e x) events) <= delta.
+Proof.
+  intros samples events V eps delta Heps Hdelta HV Hperev Hcomp.
+  pose proof (bonferroni_list samples events) as Hbon.
+  eapply Rle_trans; [exact Hbon|].
+  assert (Hsum_bnd :
+    eps * eps *
+      fold_right Rplus 0
+        (map (fun e => prob_uniform samples e) events)
+    <= INR (length events) * V).
+  { clear Hcomp Hbon Hdelta.
+    revert Hperev.
+    induction events as [|e rest IH]; intros Hperev.
+    - cbn. lra.
+    - cbn [map fold_right length].
+      pose proof (Hperev e (or_introl eq_refl)) as Hpe.
+      pose proof (IH (fun e' He' => Hperev e' (or_intror He'))) as IHapp.
+      rewrite S_INR.
+      nra. }
+  apply Rmult_le_reg_l with (r := eps * eps); [nra|].
+  eapply Rle_trans; [exact Hsum_bnd | exact Hcomp].
+Qed.
+
+Local Close Scope R_scope.
+
 (** ** Certifier extraction for the deployable CLI.
 
     Extracts the decidable [Separated_check], its correctness witness
